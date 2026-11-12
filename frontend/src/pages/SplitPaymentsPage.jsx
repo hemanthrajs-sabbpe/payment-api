@@ -5,6 +5,7 @@ import {
   createSplitAllocationGatewayPayment,
   createSabbPePayment,
   generateSplitPaymentLinks,
+  createEasebuzzAllocationPayment,
   createSimulatorAllocationQr
 } from '../api'
 
@@ -360,30 +361,29 @@ export default function SplitPaymentsPage() {
         [allocation.id]: { email: trimmedEmail, phone: trimmedPhone }
       }))
 
-      // Call dedicated split payment-link endpoint: POST /api/payment-splits/{splitId}/payment-links
-      const bulkRes = await generateSplitPaymentLinks(selectedSplit.id, [
+      // Initiate genuine Easebuzz hosted checkout for this allocation
+      const itemResult = await createEasebuzzAllocationPayment(
+        selectedSplit.id,
+        allocation.id,
         {
-          allocationId: allocation.id,
           email: trimmedEmail,
           phone: trimmedPhone
         }
-      ])
+      )
 
-      const itemResult = bulkRes?.results?.[0]
       if (!itemResult) {
-        throw new Error('Invalid response from split payment links API.')
+        throw new Error('Invalid response from Easebuzz checkout API.')
       }
 
       if (itemResult.status === 'FAILED') {
         throw new Error(itemResult.message || 'Payment-link initiation failed on backend.')
       }
 
-      const paymentData = itemResult.payment || {}
-      const extractedUrl = itemResult.paymentUrl || paymentData.paymentUrl || paymentData.checkoutUrl || paymentData.linkUrl || ''
-      const pblOrderRef = itemResult.pblOrderRef || paymentData.pblOrderRef || ''
-      const paymentStatus = paymentData.paymentStatus || itemResult.status || 'PENDING'
-      const paymentId = itemResult.paymentId || paymentData.paymentId || null
-      const localEmail = itemResult.localEmailDelivery || paymentData.localEmailDelivery || 'NOT_ATTEMPTED'
+      const extractedUrl = itemResult.checkoutUrl || itemResult.paymentUrl || ''
+      const txnRef = itemResult.transactionId || ''
+      const paymentStatus = itemResult.status || 'PENDING'
+      const paymentId = itemResult.paymentId || null
+      const emailStatus = itemResult.emailDispatchStatus || 'NOT_REQUESTED'
 
       setActivePblModal({
         allocationId: allocation.id,
@@ -391,19 +391,19 @@ export default function SplitPaymentsPage() {
         recipientEmail: trimmedEmail,
         amount: allocation.allocationAmount,
         paymentId: paymentId,
-        pblOrderRef: pblOrderRef,
+        pblOrderRef: txnRef,
         paymentUrl: extractedUrl,
         paymentStatus: paymentStatus,
-        localEmailDelivery: localEmail,
-        statusText: itemResult.message || (itemResult.status === 'LINK_CREATED' ? 'Payment link created successfully' : itemResult.status)
+        localEmailDelivery: emailStatus,
+        statusText: itemResult.message || 'Easebuzz hosted checkout session generated successfully'
       })
 
-      setNotice(`Pay by Link generated for ${allocation.participantName} (Ref: ${pblOrderRef || 'N/A'})!`)
+      setNotice(`Easebuzz hosted checkout generated for ${allocation.participantName} (Txn: ${txnRef || 'N/A'})!`)
 
       const refreshed = await apiCall(`/payment-splits/${selectedSplit.id}/allocations`)
       setAllocations(Array.isArray(refreshed) ? refreshed : [])
     } catch (err) {
-      setError(err.message || 'Failed to generate SabbPe Pay by Link.')
+      setError(err.message || 'Failed to generate Easebuzz hosted checkout.')
     } finally {
       setLinkLoadingId(null)
       setContactPromptModal(null)
@@ -800,9 +800,9 @@ export default function SplitPaymentsPage() {
                           style={{ fontSize: 11, padding: '5px 10px', background: '#eff6ff', color: '#2563eb', borderColor: '#bfdbfe' }}
                           onClick={() => handleGeneratePblLink(alloc)}
                           disabled={linkLoadingId === alloc.id || alloc.status === 'SUCCESS'}
-                          title={alloc.status === 'FAILED' ? 'Retry SabbPe Pay by Link' : 'Generate SabbPe Pay by Link'}
+                          title={alloc.status === 'FAILED' ? 'Retry Easebuzz Pay by Link' : 'Generate Easebuzz Pay by Link'}
                         >
-                          {alloc.status === 'FAILED' ? 'Retry PBL' : 'PBL Link'}
+                          {alloc.status === 'FAILED' ? 'Retry PBL' : 'Easebuzz Link'}
                         </button>
                         <button
                           type="button"
@@ -831,7 +831,7 @@ export default function SplitPaymentsPage() {
             <div>
               <h3>Participant Contact Details — {contactPromptModal.participantName}</h3>
               <p className="card-subtitle">
-                Enter valid recipient contact info to dispatch the official SabbPe Pay by Link.
+                Enter valid recipient contact info to dispatch the official Easebuzz Pay by Link.
               </p>
             </div>
             <button className="btn-secondary" onClick={() => setContactPromptModal(null)}>Cancel</button>

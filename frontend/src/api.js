@@ -62,6 +62,14 @@ export function initiateEasebuzzPayment(paymentDetails) {
   })
 }
 
+// Generate genuine Easebuzz hosted checkout link for a split participant allocation
+export function createEasebuzzAllocationPayment(splitId, allocationId, contact = {}) {
+  return apiRequest(`/payment-splits/${encodeURIComponent(splitId)}/allocations/${encodeURIComponent(allocationId)}/easebuzz/pay`, {
+    method: 'POST',
+    body: JSON.stringify(contact),
+  })
+}
+
 // Create a SabbPe Pay by Link payment
 
 // Create a SabbPe Payment Gateway (Dynamic QR) payment

@@ -244,20 +244,17 @@ public class PaymentService {
 
         Payment savedPayment = paymentRepository.save(payment);
 
-        // If this payment is linked to a split allocation, synchronize the allocation safely
+        // If this payment is linked to a split allocation, synchronize the allocation within the same transaction.
+        // If allocation synchronization fails, the transaction rolls back so payment does not remain falsely SUCCESS.
         if ("SUCCESS".equalsIgnoreCase(savedPayment.getStatus())) {
-            try {
-                Optional<PaymentSplitAllocation> allocOpt = allocationRepository.findByPaymentId(savedPayment.getId());
-                if (allocOpt.isPresent()) {
-                    PaymentSplitAllocation alloc = allocOpt.get();
-                    paymentSplitService.recordSuccessfulPayment(
-                            alloc.getSplitId(),
-                            alloc.getId(),
-                            savedPayment.getId()
-                    );
-                }
-            } catch (Exception ex) {
-                // Safeguard: do not fail callback transaction if allocation synchronization encounters non-critical error
+            Optional<PaymentSplitAllocation> allocOpt = allocationRepository.findByPaymentId(savedPayment.getId());
+            if (allocOpt.isPresent()) {
+                PaymentSplitAllocation alloc = allocOpt.get();
+                paymentSplitService.recordSuccessfulPayment(
+                        alloc.getSplitId(),
+                        alloc.getId(),
+                        savedPayment.getId()
+                );
             }
         }
 

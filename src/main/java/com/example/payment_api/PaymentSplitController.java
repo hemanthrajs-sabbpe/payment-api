@@ -470,6 +470,27 @@ public class PaymentSplitController {
     }
 
     // =========================================================
+    // 7B. PARTICIPANT EASEBUZZ CHECKOUT LINK GENERATION
+    // POST /api/payment-splits/{splitId}/allocations/{allocationId}/easebuzz/pay
+    // =========================================================
+
+    @PostMapping("/{splitId}/allocations/{allocationId}/easebuzz/pay")
+    public ResponseEntity<Map<String, Object>> createEasebuzzPaymentForAllocation(
+            @PathVariable Long splitId,
+            @PathVariable Long allocationId,
+            @RequestBody(required = false) Map<String, String> contactDetails) {
+
+        String email = contactDetails != null ? contactDetails.get("email") : null;
+        String phone = contactDetails != null ? contactDetails.get("phone") : null;
+
+        log.info("Request for Easebuzz hosted checkout for split #{} allocation #{}", splitId, allocationId);
+        Map<String, Object> response = paymentSplitService.initiateEasebuzzAllocationPayment(
+                splitId, allocationId, email, phone);
+
+        return ResponseEntity.ok(response);
+    }
+
+    // =========================================================
     // 8. CONTACT VALIDATION
     // =========================================================
 

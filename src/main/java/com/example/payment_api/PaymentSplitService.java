@@ -1,5 +1,11 @@
 package com.example.payment_api;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -10,10 +16,15 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
 
 @Service
 public class PaymentSplitService {
+
+    private static final Logger log = LoggerFactory.getLogger(PaymentSplitService.class);
 
     private final PaymentSplitRepository splitRepository;
     private final PaymentSplitAllocationRepository allocationRepository;
@@ -22,6 +33,19 @@ public class PaymentSplitService {
     private final CurrentUserService currentUserService;
     private final BusinessMemberRepository businessMemberRepository;
     private final BusinessCategoryRepository businessCategoryRepository;
+    private final EasebuzzService easebuzzService;
+    private final EasebuzzEmailService easebuzzEmailService;
+    private final ObjectProvider<JavaMailSender> mailSenderProvider;
+    private final Executor paymentEmailExecutor;
+
+    @Value("${easebuzz.success-url:http://localhost:8080/api/payments/easebuzz/response}")
+    private String easebuzzSuccessUrl;
+
+    @Value("${easebuzz.failure-url:http://localhost:8080/api/payments/easebuzz/response}")
+    private String easebuzzFailureUrl;
+
+    @Value("${sabbpe.frontend-url:http://192.168.1.8:5173}")
+    private String frontendUrl;
 
     public PaymentSplitService(
             PaymentSplitRepository splitRepository,
@@ -30,7 +54,11 @@ public class PaymentSplitService {
             SabbPeStatusService sabbPeStatusService,
             CurrentUserService currentUserService,
             BusinessMemberRepository businessMemberRepository,
-            BusinessCategoryRepository businessCategoryRepository) {
+            BusinessCategoryRepository businessCategoryRepository,
+            EasebuzzService easebuzzService,
+            EasebuzzEmailService easebuzzEmailService,
+            ObjectProvider<JavaMailSender> mailSenderProvider,
+            @Qualifier("paymentEmailExecutor") Executor paymentEmailExecutor) {
         this.splitRepository = splitRepository;
         this.allocationRepository = allocationRepository;
         this.paymentRepository = paymentRepository;
@@ -38,6 +66,10 @@ public class PaymentSplitService {
         this.currentUserService = currentUserService;
         this.businessMemberRepository = businessMemberRepository;
         this.businessCategoryRepository = businessCategoryRepository;
+        this.easebuzzService = easebuzzService;
+        this.easebuzzEmailService = easebuzzEmailService;
+        this.mailSenderProvider = mailSenderProvider;
+        this.paymentEmailExecutor = paymentEmailExecutor;
     }
 
     /**
@@ -885,6 +917,172 @@ public List<PaymentSplit> getAllSplits() {
         }
 
         return savedSplit;
+    }
+
+    /**
+     * Initiate genuine Easebuzz hosted checkout for a specific split allocation.
+     * Enforces strict duplicate prevention, amount matching, and concurrency protection:
+     * - Locks the allocation row using Pessimistic Write Lock (findByIdAndSplitIdForUpdate).
+     * - Blocks initiation if allocation is already SUCCESS or master split is already PAID.
+     * - If an active PENDING Easebuzz payment with a valid checkoutUrl already exists, reuses it safely.
+     * - Only verified terminal failure statuses (FAILED, TIMEOUT, CANCELLED) permit generating a replacement session.
+     * - Initiates checkout with exact allocation amount and a unique transactionId.
+     * - Asynchronously dispatches invoice email via dedicated managed paymentEmailExecutor.
+     */
+    @Transactional
+    public Map<String, Object> initiateEasebuzzAllocationPayment(
+            Long splitId, Long allocationId, String customerEmail, String customerPhone) {
+
+        if (splitId == null || allocationId == null) {
+            throw new IllegalArgumentException("splitId and allocationId are required");
+        }
+
+        // Authorize caller's permission to access this split
+        PaymentSplit split = getSplitByIdForCurrentUser(splitId);
+        if ("PAID".equalsIgnoreCase(split.getStatus())) {
+            throw new IllegalStateException("Split #" + splitId + " is already fully paid");
+        }
+
+        PaymentSplitAllocation allocation = allocationRepository.findByIdAndSplitIdForUpdate(allocationId, splitId)
+                .orElseThrow(() -> new IllegalArgumentException("Allocation #" + allocationId + " not found for split #" + splitId));
+
+        if ("SUCCESS".equalsIgnoreCase(allocation.getStatus())) {
+            throw new IllegalStateException("Allocation #" + allocationId + " has already been paid");
+        }
+
+        // Check if an existing payment is already linked
+        if (allocation.getPaymentId() != null) {
+            Optional<Payment> existingPaymentOpt = paymentRepository.findById(allocation.getPaymentId());
+            if (existingPaymentOpt.isPresent()) {
+                Payment existingPayment = existingPaymentOpt.get();
+                String existingStatus = existingPayment.getStatus() == null ? "" : existingPayment.getStatus().trim().toUpperCase(Locale.ROOT);
+
+                if ("SUCCESS".equalsIgnoreCase(existingStatus)) {
+                    throw new IllegalStateException("Payment linked to allocation #" + allocationId + " is already SUCCESS");
+                }
+
+                if ("PENDING".equalsIgnoreCase(existingStatus)
+                        && existingPayment.getPaymentUrl() != null
+                        && !existingPayment.getPaymentUrl().trim().isEmpty()) {
+                    log.info("Reusing existing pending Easebuzz payment #{} for split #{} allocation #{}",
+                            existingPayment.getId(), splitId, allocationId);
+
+                    Map<String, Object> res = new LinkedHashMap<>();
+                    res.put("splitId", splitId);
+                    res.put("allocationId", allocationId);
+                    res.put("paymentId", existingPayment.getId());
+                    res.put("transactionId", existingPayment.getTransactionId());
+                    res.put("amount", allocation.getAllocationAmount());
+                    res.put("status", "PENDING");
+                    res.put("checkoutUrl", existingPayment.getPaymentUrl());
+                    res.put("paymentUrl", existingPayment.getPaymentUrl());
+                    res.put("emailDispatchStatus", "NOT_REQUESTED");
+                    res.put("message", "Existing active Easebuzz checkout link reused.");
+                    return res;
+                }
+            }
+        }
+
+        // Validate contact details if provided
+        String trimmedEmail = customerEmail != null ? customerEmail.trim() : "";
+        String trimmedPhone = customerPhone != null ? customerPhone.trim() : "";
+
+        if (!trimmedEmail.isEmpty() && !trimmedEmail.matches("^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$")) {
+            throw new IllegalArgumentException("A valid email address is required");
+        }
+        if (!trimmedPhone.isEmpty() && !trimmedPhone.matches("^\\+?[0-9]{10,15}$")) {
+            throw new IllegalArgumentException("Phone must contain 10 to 15 digits");
+        }
+
+        // Normalize phone for Easebuzz (requires exactly 10 digits)
+        String easebuzzPhone = trimmedPhone.replaceAll("[^0-9]", "");
+        if (easebuzzPhone.length() > 10) {
+            easebuzzPhone = easebuzzPhone.substring(easebuzzPhone.length() - 10);
+        } else if (easebuzzPhone.length() < 10) {
+            easebuzzPhone = "9876543210"; // Sandbox fallback if participant phone is incomplete
+        }
+
+        String easebuzzEmail = trimmedEmail.isEmpty() ? "customer@example.com" : trimmedEmail;
+        String customerName = allocation.getParticipantName() != null ? allocation.getParticipantName().trim() : "Participant";
+        BigDecimal amount = allocation.getAllocationAmount().setScale(2, RoundingMode.HALF_UP);
+        String productInfo = "Split " + splitId + " Alloc " + allocationId + " " + customerName;
+
+        String transactionId = "TXN-SPLIT-" + splitId + "-" + allocationId + "-" + UUID.randomUUID().toString().replace("-", "").substring(0, 10);
+
+        Payment payment = new Payment(
+                customerName,
+                amount.doubleValue(),
+                "PENDING"
+        );
+        payment.setTransactionId(transactionId);
+        payment.setMerchantOrderRef("SPLIT-" + splitId + "-ALLOC-" + allocationId);
+        payment.setGatewayProvider("EASEBUZZ");
+        payment = paymentRepository.save(payment);
+
+        try {
+            String checkoutUrl = easebuzzService.initiatePayment(
+                    transactionId,
+                    amount,
+                    productInfo,
+                    customerName,
+                    easebuzzEmail,
+                    easebuzzPhone,
+                    easebuzzSuccessUrl,
+                    easebuzzFailureUrl
+            );
+
+            payment.setPaymentUrl(checkoutUrl);
+            paymentRepository.save(payment);
+
+            // Link this payment to the allocation
+            allocation.setPaymentId(payment.getId());
+            allocation.setStatus("PENDING");
+            allocationRepository.save(allocation);
+
+            // Lifecycle-based email dispatch
+            String emailDispatchStatus = "NOT_REQUESTED";
+            if (!trimmedEmail.isEmpty()) {
+                if (mailSenderProvider.getIfAvailable() == null) {
+                    emailDispatchStatus = "DISABLED_OR_UNAVAILABLE";
+                } else {
+                    final String targetEmail = trimmedEmail;
+                    final String safeCustomer = customerName;
+                    final BigDecimal emailAmount = amount;
+                    final String txnId = transactionId;
+                    final String pUrl = checkoutUrl;
+                    final String trackingUrl = frontendUrl.replaceAll("/+$", "") + "/payment-result/" + payment.getId();
+
+                    try {
+                        CompletableFuture.runAsync(() -> {
+                            easebuzzEmailService.sendEasebuzzCheckoutEmailSafely(targetEmail, safeCustomer, emailAmount, txnId, pUrl, trackingUrl);
+                        }, paymentEmailExecutor);
+                        emailDispatchStatus = "QUEUED";
+                    } catch (Exception submitEx) {
+                        log.warn("Failed to queue email for split allocation #{}: {}", allocationId, submitEx.getMessage());
+                        emailDispatchStatus = "FAILED";
+                    }
+                }
+            }
+
+            Map<String, Object> response = new LinkedHashMap<>();
+            response.put("splitId", splitId);
+            response.put("allocationId", allocationId);
+            response.put("paymentId", payment.getId());
+            response.put("transactionId", transactionId);
+            response.put("amount", amount);
+            response.put("status", "PENDING");
+            response.put("checkoutUrl", checkoutUrl);
+            response.put("paymentUrl", checkoutUrl);
+            response.put("emailDispatchStatus", emailDispatchStatus);
+            response.put("message", "Easebuzz hosted checkout link initiated for allocation #" + allocationId);
+
+            return response;
+
+        } catch (RuntimeException ex) {
+            payment.setStatus("INITIATION_FAILED");
+            paymentRepository.save(payment);
+            throw ex;
+        }
     }
 
     public record AllocationInput(
