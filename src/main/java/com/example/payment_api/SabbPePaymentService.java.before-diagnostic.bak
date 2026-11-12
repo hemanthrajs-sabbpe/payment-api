@@ -1,0 +1,553 @@
+package com.example.payment_api;
+
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonProperty;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestClientResponseException;
+import org.springframework.web.client.RestTemplate;
+
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.UUID;
+
+@Service
+public class SabbPePaymentService {
+
+    private static final Logger log =
+            LoggerFactory.getLogger(SabbPePaymentService.class);
+
+    private final PaymentRepository paymentRepository;
+    private final SabbPeTokenService sabbPeTokenService;
+    private final PaymentSplitService paymentSplitService;
+    private final SabbPeStatusService sabbPeStatusService;
+    private final RestTemplate restTemplate = new RestTemplate();
+
+    @Value("${sabbpe.base-url}")
+    private String baseUrl;
+
+    @Value("${sabbpe.frontend-url}")
+    private String frontendUrl;
+
+    @Value("${sabbpe.initiate-path:/sabbpe/v1/paybylink/generate}")
+    private String initiatePath;
+
+    public SabbPePaymentService(
+            PaymentRepository paymentRepository,
+            SabbPeTokenService sabbPeTokenService,
+            PaymentSplitService paymentSplitService,
+            SabbPeStatusService sabbPeStatusService) {
+
+        this.paymentRepository = paymentRepository;
+        this.sabbPeTokenService = sabbPeTokenService;
+        this.paymentSplitService = paymentSplitService;
+        this.sabbPeStatusService = sabbPeStatusService;
+    }
+
+    public Map<String, Object> preparePayment(
+            SabbPePaymentRequest request) {
+
+        validateConfiguration(request);
+
+        if (request.getAmount() == null
+                || request.getAmount().compareTo(BigDecimal.ZERO) <= 0) {
+
+            throw new IllegalArgumentException(
+                    "Payment amount must be greater than zero.");
+        }
+
+        if (isBlank(request.getCustomerName())
+                || isBlank(request.getEmail())
+                || isBlank(request.getPhone())) {
+
+            throw new IllegalArgumentException(
+                    "Customer name, email, and phone are required.");
+        }
+
+        /*
+         * Both IDs must be provided for a split payment.
+         * If neither is provided, normal SabbPe payments continue
+         * to work as before.
+         */
+        Long splitId = request.getSplitId();
+        Long allocationId = request.getAllocationId();
+
+        boolean isSplitPayment =
+                splitId != null || allocationId != null;
+
+        if (isSplitPayment
+                && (splitId == null || allocationId == null)) {
+
+            throw new IllegalArgumentException(
+                    "Both splitId and allocationId are required "
+                            + "for a split payment.");
+        }
+
+        PaymentSplitAllocation allocation = null;
+
+        if (isSplitPayment) {
+
+            PaymentSplit split =
+                    paymentSplitService.getSplitById(splitId);
+
+            allocation = paymentSplitService
+                    .getAllocations(splitId)
+                    .stream()
+                    .filter(item -> allocationId.equals(item.getId()))
+                    .findFirst()
+                    .orElseThrow(() ->
+                            new IllegalArgumentException(
+                                    "Allocation does not belong to this split."));
+
+            BigDecimal requestedAmount =
+                    request.getAmount()
+                            .setScale(2, RoundingMode.HALF_UP);
+
+            BigDecimal allocationAmount =
+                    allocation.getAllocationAmount()
+                            .setScale(2, RoundingMode.HALF_UP);
+
+            if (requestedAmount.compareTo(allocationAmount) != 0) {
+                throw new IllegalArgumentException(
+                        "Payment amount must match the allocation amount.");
+            }
+
+            if (!allocation.getParticipantName().trim()
+                    .equalsIgnoreCase(
+                            request.getCustomerName().trim())) {
+
+                throw new IllegalArgumentException(
+                        "Customer name must match the allocation participant.");
+            }
+
+            if ("PAID".equalsIgnoreCase(split.getStatus())) {
+                throw new IllegalArgumentException(
+                        "This split has already been fully paid.");
+            }
+
+            if ("SUCCESS".equalsIgnoreCase(allocation.getStatus())) {
+                throw new IllegalArgumentException(
+                        "This allocation has already been paid.");
+            }
+
+            if (allocation.getPaymentId() != null) {
+
+                Payment previousPayment = paymentRepository
+                        .findById(allocation.getPaymentId())
+                        .orElseThrow(() -> new IllegalStateException(
+                                "The allocation references a missing payment. "
+                                        + "Replacement is blocked for safety."));
+
+                String previousLocalStatus = previousPayment.getStatus() == null
+                        ? ""
+                        : previousPayment.getStatus().trim().toUpperCase(Locale.ROOT);
+
+                if ("SUCCESS".equals(previousLocalStatus)) {
+                    paymentSplitService.recordSuccessfulPayment(
+                            splitId, allocationId, previousPayment.getId());
+
+                    return existingPaymentResponse(
+                            previousPayment, splitId, allocationId,
+                            "SUCCESS", null,
+                            "The existing payment is successful. No replacement link was created.");
+                }
+
+                if ("REFUNDED".equals(previousLocalStatus)) {
+                    throw new IllegalArgumentException(
+                            "The existing payment is REFUNDED. Replacement is blocked.");
+                }
+
+                SabbPeStatusService.SabbPePaymentStatusResponse previousGateway =
+                        sabbPeStatusService.getVerifiedPaymentStatus(previousPayment);
+
+                /*
+                 * Fail closed if the provider status response is missing or
+                 * incomplete. Never create a replacement link when the
+                 * previous payment's status could not be verified.
+                 */
+                if (previousGateway == null
+                        || isBlank(previousGateway.paymentStatus())) {
+                    throw new IllegalStateException(
+                            "SabbPe returned no verifiable payment status. "
+                                    + "Replacement is blocked for safety.");
+                }
+
+                String verifiedStatus = previousGateway.paymentStatus()
+                        .trim().toUpperCase(Locale.ROOT);
+
+                switch (verifiedStatus) {
+                    case "SUCCESS":
+                        previousPayment.setStatus("SUCCESS");
+                        if (!isBlank(previousGateway.masterTransactionId())) {
+                            previousPayment.setTransactionId(
+                                    previousGateway.masterTransactionId().trim());
+                        }
+                        paymentRepository.save(previousPayment);
+
+                        paymentSplitService.recordSuccessfulPayment(
+                                splitId, allocationId, previousPayment.getId());
+
+                        return existingPaymentResponse(
+                                previousPayment, splitId, allocationId,
+                                "SUCCESS", previousGateway.linkStatus(),
+                                "SabbPe confirms the existing payment is successful. No replacement link was created.");
+
+                    case "PENDING":
+                        previousPayment.setStatus("PENDING");
+                        paymentRepository.save(previousPayment);
+
+                        String currentLinkStatus = previousGateway.linkStatus() == null
+                                ? "UNKNOWN"
+                                : previousGateway.linkStatus().trim().toUpperCase(Locale.ROOT);
+
+                        String pendingMessage;
+
+                        if ("EXPIRED".equals(currentLinkStatus)) {
+                            pendingMessage =
+                                    "SabbPe reports that the existing link is EXPIRED, "
+                                    + "but the payment status remains PENDING. "
+                                    + "A replacement is blocked until the provider confirms "
+                                    + "that the old link can no longer accept payment.";
+                        } else if ("DELIVERY_FAILED".equals(currentLinkStatus)) {
+                            pendingMessage =
+                                    "SabbPe reports DELIVERY_FAILED, but the payment status "
+                                    + "remains PENDING. Verify the existing payment before "
+                                    + "attempting another link.";
+                        } else {
+                            pendingMessage =
+                                    "SabbPe still reports the existing payment as PENDING "
+                                    + "with link status " + currentLinkStatus
+                                    + ". No replacement link was created.";
+                        }
+
+                        return existingPaymentResponse(
+                                previousPayment,
+                                splitId,
+                                allocationId,
+                                "PENDING",
+                                previousGateway.linkStatus(),
+                                pendingMessage);
+
+                    case "REFUNDED":
+                        previousPayment.setStatus("REFUNDED");
+                        paymentRepository.save(previousPayment);
+
+                        return existingPaymentResponse(
+                                previousPayment, splitId, allocationId,
+                                "REFUNDED", previousGateway.linkStatus(),
+                                "SabbPe reports the existing payment as REFUNDED. Replacement is blocked.");
+
+                    case "TIMEOUT":
+                    case "FAILED":
+                    case "CANCELLED":
+                        // A fresh link is considered only after SabbPe confirms
+                        // a terminal, non-successful status for this exact payment.
+                        previousPayment.setStatus(verifiedStatus);
+                        paymentRepository.save(previousPayment);
+                        break;
+
+                    default:
+                        throw new IllegalStateException(
+                                "Replacement blocked for unsupported SabbPe status: "
+                                        + verifiedStatus);
+                }
+            }
+        }
+
+        String merchantOrderRef = "SABBPE-"
+                + UUID.randomUUID()
+                .toString()
+                .replace("-", "")
+                .substring(0, 16)
+                .toUpperCase();
+
+        Payment payment = new Payment(
+                request.getCustomerName(),
+                request.getAmount().doubleValue(),
+                "PENDING"
+        );
+
+        payment.setMerchantOrderRef(merchantOrderRef);
+        payment = paymentRepository.save(payment);
+
+        try {
+
+            // Step 1: Generate a fresh token for this order.
+            SabbPeTokenService.SabbPeTokenResponse tokenResponse =
+                    sabbPeTokenService.generateToken(merchantOrderRef);
+
+            // Step 2: Prepare customer details.
+            Map<String, String> customer = new LinkedHashMap<>();
+
+            customer.put(
+                    "firstname",
+                    request.getCustomerName().trim());
+
+            customer.put(
+                    "email",
+                    request.getEmail().trim());
+
+            customer.put(
+                    "phone",
+                    request.getPhone().trim());
+
+            // Step 3: Prepare the Pay By Link request.
+            Map<String, Object> requestBody = new LinkedHashMap<>();
+
+            requestBody.put(
+                    "sabbpe_token",
+                    tokenResponse.sabbpeToken());
+
+            requestBody.put(
+                    "amount",
+                    request.getAmount());
+
+            requestBody.put(
+                    "description",
+                    request.getProductInfo());
+
+            requestBody.put(
+                    "redirect_url",
+                    frontendUrl);
+
+            requestBody.put(
+                    "customer",
+                    customer);
+
+            // Preserve the existing delivery channels.
+            Map<String, Object> delivery = new LinkedHashMap<>();
+
+            delivery.put(
+                    "channels",
+                    List.of("EMAIL", "WHATSAPP"));
+
+            requestBody.put("delivery", delivery);
+
+            // Step 4: Prepare HTTP headers.
+            HttpHeaders headers = new HttpHeaders();
+
+            headers.setContentType(MediaType.APPLICATION_JSON);
+            headers.setAccept(
+                    List.of(MediaType.APPLICATION_JSON));
+
+            HttpEntity<Map<String, Object>> httpRequest =
+                    new HttpEntity<>(requestBody, headers);
+
+            String url = baseUrl.replaceAll("/+$", "")
+                    + "/"
+                    + initiatePath.replaceAll("^/+", "");
+
+            // Step 5: Call the existing SabbPe API.
+            ResponseEntity<SabbPePayByLinkResponse> response =
+                    restTemplate.postForEntity(
+                            url,
+                            httpRequest,
+                            SabbPePayByLinkResponse.class);
+
+            SabbPePayByLinkResponse result = response.getBody();
+
+            if (result == null
+                    || !Boolean.TRUE.equals(result.status())
+                    || isBlank(result.pblOrderRef())) {
+
+                String message = result == null
+                        ? "Empty response from SabbPe."
+                        : result.message();
+
+                throw new SabbPeIntegrationException(
+                        "SabbPe Pay By Link generation failed. "
+                                + (isBlank(message)
+                                    ? "Check the UAT response and merchant configuration."
+                                    : "Provider message: " + safeMessage(message)));
+            }
+
+            // Step 6: Save the payment-link reference.
+            payment.setPblOrderRef(result.pblOrderRef());
+            payment.setStatus("PENDING");
+
+            payment = paymentRepository.save(payment);
+
+            /*
+             * Step 7: Link the generated payment to the allocation.
+             * The allocation remains PENDING until the callback
+             * independently verifies the payment with SabbPe.
+             */
+            if (isSplitPayment) {
+
+                paymentSplitService.linkPendingPayment(
+                        splitId,
+                        allocationId,
+                        payment.getId());
+            }
+
+            // Step 8: Return the response.
+            Map<String, Object> apiResponse =
+                    new LinkedHashMap<>();
+
+            apiResponse.put("linkCreated", true);
+
+            apiResponse.put(
+                    "paymentId",
+                    payment.getId());
+
+            apiResponse.put(
+                    "merchantOrderRef",
+                    merchantOrderRef);
+
+            apiResponse.put(
+                    "pblOrderRef",
+                    result.pblOrderRef());
+
+            apiResponse.put(
+                    "amount",
+                    request.getAmount());
+
+            apiResponse.put(
+                    "paymentStatus",
+                    "PENDING");
+
+            apiResponse.put(
+                    "linkStatus",
+                    result.linkStatus());
+
+            apiResponse.put(
+                    "delivery",
+                    result.delivery());
+
+            apiResponse.put(
+                    "message",
+                    result.message());
+
+            if (isSplitPayment) {
+                apiResponse.put("splitId", splitId);
+                apiResponse.put("allocationId", allocationId);
+            }
+
+            return apiResponse;
+
+        } catch (RestClientResponseException ex) {
+
+            // Log only the upstream HTTP status; do not log the raw response body,
+            // which may contain sensitive information.
+            log.warn(
+                    "SabbPe Pay By Link generation failed: upstreamStatus={}",
+                    ex.getStatusCode().value()
+            );
+
+            payment.setStatus("INITIATION_FAILED");
+            paymentRepository.save(payment);
+
+            throw new SabbPeIntegrationException(
+                    "SabbPe returned HTTP "
+                            + ex.getStatusCode().value()
+                            + " while generating the payment link. "
+                            + "Verify the configured UAT URL and merchant settings.",
+                    ex);
+
+        } catch (RuntimeException ex) {
+
+            /*
+             * Do not delete the payment record.
+             * Preserve the failure status for troubleshooting.
+             */
+            if (!"SUCCESS".equalsIgnoreCase(payment.getStatus())) {
+                // The provider may already have created a link before a later
+                // local step failed. Do not label that existing link as failed.
+                payment.setStatus(isBlank(payment.getPblOrderRef())
+                        ? "INITIATION_FAILED"
+                        : "PENDING");
+                paymentRepository.save(payment);
+            }
+
+            throw ex;
+        }
+    }
+
+    private Map<String, Object> existingPaymentResponse(
+            Payment payment,
+            Long splitId,
+            Long allocationId,
+            String verifiedStatus,
+            String linkStatus,
+            String message) {
+
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("linkCreated", false);
+        response.put("paymentId", payment.getId());
+        response.put("merchantOrderRef", payment.getMerchantOrderRef());
+        response.put("pblOrderRef", payment.getPblOrderRef());
+        response.put("amount", payment.getAmount());
+        response.put("paymentStatus", verifiedStatus);
+        response.put("linkStatus", linkStatus);
+        response.put("message", message);
+        response.put("splitId", splitId);
+        response.put("allocationId", allocationId);
+        return response;
+    }
+
+    private void validateConfiguration(
+            SabbPePaymentRequest request) {
+
+        if (request == null) {
+            throw new IllegalArgumentException(
+                    "Payment request cannot be null.");
+        }
+
+        if (isBlank(baseUrl)
+                || isBlank(initiatePath)
+                || isBlank(frontendUrl)) {
+
+            throw new IllegalStateException(
+                    "SabbPe base URL, Pay By Link path, "
+                            + "and frontend redirect URL must be configured.");
+        }
+    }
+
+    private String safeMessage(String value) {
+        if (value == null || value.isBlank()) {
+            return "";
+        }
+        String normalized = value.replaceAll("[\\r\\n\\t]", " ").trim();
+        return normalized.length() > 240
+                ? normalized.substring(0, 240)
+                : normalized;
+    }
+
+    private boolean isBlank(String value) {
+        return value == null || value.isBlank();
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record SabbPePayByLinkResponse(
+
+            @JsonProperty("status")
+            Boolean status,
+
+            @JsonProperty("pbl_order_ref")
+            String pblOrderRef,
+
+            @JsonProperty("merchant_order_ref")
+            String merchantOrderRef,
+
+            @JsonProperty("link_status")
+            String linkStatus,
+
+            @JsonProperty("delivery")
+            Map<String, Object> delivery,
+
+            @JsonProperty("message")
+            String message
+    ) {
+    }
+}

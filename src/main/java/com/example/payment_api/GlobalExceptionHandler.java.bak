@@ -1,0 +1,100 @@
+package com.example.payment_api;
+
+import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.ResponseStatus;
+import org.springframework.web.bind.annotation.RestControllerAdvice;
+
+import java.util.HashMap;
+import java.util.Map;
+
+@RestControllerAdvice
+public class GlobalExceptionHandler {
+
+    // PAYMENT NOT FOUND
+    @ExceptionHandler(PaymentNotFoundException.class)
+    @ResponseStatus(HttpStatus.NOT_FOUND)
+    public Map<String, String> handlePaymentNotFound(
+            PaymentNotFoundException exception) {
+
+        return Map.of(
+                "message",
+                exception.getMessage()
+        );
+    }
+
+    // INVALID CUSTOM CALLBACK SECRET
+    @ExceptionHandler(InvalidCallbackSecretException.class)
+    @ResponseStatus(HttpStatus.UNAUTHORIZED)
+    public Map<String, String> handleInvalidCallbackSecret(
+            InvalidCallbackSecretException exception) {
+
+        return Map.of(
+                "message",
+                exception.getMessage()
+        );
+    }
+
+    // VALIDATION ERRORS
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public Map<String, String> handleValidationErrors(
+            MethodArgumentNotValidException exception) {
+
+        Map<String, String> errors = new HashMap<>();
+
+        exception.getBindingResult()
+                .getFieldErrors()
+                .forEach(error ->
+                        errors.put(
+                                error.getField(),
+                                error.getDefaultMessage()
+                        )
+                );
+
+        return errors;
+    }
+
+    // INVALID REQUEST OR BUSINESS VALIDATION
+    @ExceptionHandler(IllegalArgumentException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public Map<String, String> handleIllegalArgument(
+            IllegalArgumentException exception) {
+
+        return Map.of(
+                "message",
+                exception.getMessage()
+        );
+    }
+
+    // UNEXPECTED SERVER ERRORS
+    @ExceptionHandler(Exception.class)
+    @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
+    public Map<String, String> handleUnexpectedException(
+            Exception exception) {
+
+        return Map.of(
+                "message",
+                "An unexpected server error occurred"
+        );
+    }
+
+    // CUSTOM EXCEPTION: PAYMENT NOT FOUND
+    public static class PaymentNotFoundException
+            extends RuntimeException {
+
+        public PaymentNotFoundException(String message) {
+            super(message);
+        }
+    }
+
+    // CUSTOM EXCEPTION: INVALID CALLBACK SECRET
+    public static class InvalidCallbackSecretException
+            extends RuntimeException {
+
+        public InvalidCallbackSecretException(String message) {
+            super(message);
+        }
+    }
+}

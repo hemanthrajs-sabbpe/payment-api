@@ -1,0 +1,222 @@
+package com.example.payment_api;
+
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonProperty;
+
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestClientResponseException;
+import org.springframework.web.client.RestTemplate;
+
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+
+@Service
+public class SabbPeStatusService {
+
+    private static final Set<String> SUPPORTED_STATUSES = Set.of(
+            "SUCCESS", "PENDING", "FAILED", "CANCELLED", "TIMEOUT", "REFUNDED"
+    );
+
+    @Value("${sabbpe.base-url}")
+    private String baseUrl;
+
+    @Value("${sabbpe.status-path}")
+    private String statusPath;
+
+    @Value("${sabbpe.merchant-id}")
+    private String merchantId;
+
+    private final RestTemplate restTemplate = new RestTemplate();
+
+    public SabbPePaymentStatusResponse getPaymentStatus(
+            String pblOrderRef) {
+
+        if (isBlank(baseUrl) || isBlank(statusPath)) {
+            throw new IllegalStateException(
+                    "SabbPe base URL and status path must be configured."
+            );
+        }
+
+        if (isBlank(merchantId)) {
+            throw new IllegalStateException(
+                    "SabbPe merchant ID is missing."
+            );
+        }
+
+        if (isBlank(pblOrderRef)) {
+            throw new IllegalArgumentException(
+                    "Pay By Link reference is required."
+            );
+        }
+
+        Map<String, String> requestBody = new LinkedHashMap<>();
+        requestBody.put("pbl_order_ref", pblOrderRef.trim());
+        requestBody.put("merchant_id", merchantId);
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.setAccept(List.of(MediaType.APPLICATION_JSON));
+
+        HttpEntity<Map<String, String>> request =
+                new HttpEntity<>(requestBody, headers);
+
+        String url = baseUrl.replaceAll("/+$", "")
+                + "/"
+                + statusPath.replaceAll("^/+", "");
+
+        try {
+            ResponseEntity<SabbPePaymentStatusResponse> response =
+                    restTemplate.postForEntity(
+                            url,
+                            request,
+                            SabbPePaymentStatusResponse.class
+                    );
+
+            SabbPePaymentStatusResponse result = response.getBody();
+
+            if (result == null) {
+                throw new IllegalStateException(
+                        "SabbPe returned an empty payment-status response."
+                );
+            }
+
+            if (isBlank(result.gateway())
+                    || !"SABBPE".equalsIgnoreCase(result.gateway().trim())) {
+                throw new IllegalStateException(
+                        "SabbPe returned an invalid gateway."
+                );
+            }
+
+            if (isBlank(result.product())
+                    || !"PAY_BY_LINK".equalsIgnoreCase(result.product().trim())) {
+                throw new IllegalStateException(
+                        "SabbPe returned an invalid payment product."
+                );
+            }
+
+            if (isBlank(result.pblOrderRef())
+                    || isBlank(result.merchantOrderRef())
+                    || isBlank(result.paymentStatus())
+                    || result.amount() == null) {
+                throw new IllegalStateException(
+                        "SabbPe returned an incomplete payment-status response."
+                );
+            }
+
+            return result;
+
+        } catch (RestClientResponseException ex) {
+            throw new IllegalStateException(
+                    "SabbPe payment-status request failed with HTTP "
+                            + ex.getStatusCode().value()
+                            + ". Check the URL and merchant configuration.",
+                    ex
+            );
+        }
+    }
+
+    /**
+     * Fetches the gateway status and validates it against the saved payment.
+     * This method does not change the database.
+     */
+    public SabbPePaymentStatusResponse getVerifiedPaymentStatus(Payment payment) {
+        if (payment == null
+                || payment.getId() == null
+                || isBlank(payment.getPblOrderRef())
+                || isBlank(payment.getMerchantOrderRef())
+                || payment.getAmount() == null
+                || payment.getAmount() <= 0) {
+            throw new IllegalArgumentException(
+                    "Payment is missing required gateway-verification fields."
+            );
+        }
+
+        SabbPePaymentStatusResponse response =
+                getPaymentStatus(payment.getPblOrderRef());
+
+        if (!payment.getPblOrderRef().trim()
+                .equals(response.pblOrderRef().trim())
+                || !payment.getMerchantOrderRef().trim()
+                .equals(response.merchantOrderRef().trim())) {
+            throw new IllegalStateException(
+                    "SabbPe payment references do not match the saved payment."
+            );
+        }
+
+        BigDecimal storedAmount = BigDecimal.valueOf(payment.getAmount())
+                .setScale(2, RoundingMode.HALF_UP);
+        BigDecimal gatewayAmount = response.amount()
+                .setScale(2, RoundingMode.HALF_UP);
+
+        if (storedAmount.compareTo(gatewayAmount) != 0) {
+            throw new IllegalStateException(
+                    "SabbPe payment amount does not match the saved payment."
+            );
+        }
+
+        String status = response.paymentStatus().trim().toUpperCase(Locale.ROOT);
+        if (!SUPPORTED_STATUSES.contains(status)) {
+            throw new IllegalStateException(
+                    "Unsupported SabbPe payment status: " + status
+            );
+        }
+
+        return response;
+    }
+
+    private boolean isBlank(String value) {
+        return value == null || value.isBlank();
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record SabbPePaymentStatusResponse(
+
+            @JsonProperty("gateway")
+            String gateway,
+
+            @JsonProperty("product")
+            String product,
+
+            @JsonProperty("pbl_order_ref")
+            String pblOrderRef,
+
+            @JsonProperty("merchant_order_ref")
+            String merchantOrderRef,
+
+            @JsonProperty("master_transaction_id")
+            String masterTransactionId,
+
+            @JsonProperty("payment_status")
+            String paymentStatus,
+
+            @JsonProperty("link_status")
+            String linkStatus,
+
+            @JsonProperty("amount")
+            BigDecimal amount,
+
+            @JsonProperty("currency")
+            String currency,
+
+            @JsonProperty("payment_method")
+            String paymentMethod,
+
+            @JsonProperty("rrn")
+            String rrn,
+
+            @JsonProperty("payment_completed_at")
+            String paymentCompletedAt
+
+    ) {
+    }
+}

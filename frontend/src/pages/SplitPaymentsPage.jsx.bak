@@ -1,0 +1,1261 @@
+﻿import React, { useState, useEffect } from 'react'
+import { QRCodeSVG } from 'qrcode.react'
+import {
+  getBusinessCategories,
+  createSplitAllocationGatewayPayment,
+  createSabbPePayment
+} from '../api'
+
+const API_BASE_URL = (typeof window !== 'undefined' && window.location.hostname && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1')
+  ? ('http://' + window.location.hostname + ':8080/api')
+  : 'http://localhost:8080/api'
+
+function getAuthHeaders() {
+  const headers = { Accept: 'application/json' }
+  const token = localStorage.getItem('jwtToken')
+  if (token) headers.Authorization = 'Bearer ' + token
+  return headers
+}
+
+export default
+function SplitPayment() {
+  const splitPaymentStyles = `
+    .split-page { display:flex; flex-direction:column; gap:20px; width:100%; max-width:100%; min-width:0; }
+    .split-page > .welcome { width:100%; min-width:0; box-sizing:border-box; flex-wrap:nowrap; }
+    .split-page .split-welcome > div { flex:1 1 auto; min-width:0; }
+    .split-page .split-refresh-button { width:auto !important; min-width:140px; max-width:100%; flex:0 0 auto !important; align-self:center; white-space:nowrap; }
+    .split-page .panel { width:100%; max-width:100%; min-width:0; box-sizing:border-box; }
+    .split-page .split-main-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:16px; width:100%; min-width:0; }
+    .split-page .split-field { min-width:0; width:100%; }
+    .split-page .split-field label { display:block; margin:0 0 6px; color:#263752; font-size:12px; font-weight:700; }
+    .split-page .split-field input, .split-page .split-field select { display:block; width:100%; min-width:0; max-width:100%; min-height:43px; padding:10px 12px; border:1px solid #d8e2f1; border-radius:9px; background:#fff; color:#172033; font:inherit; box-sizing:border-box; }
+    .split-page .split-field input[readonly] { background:#f3f6fb; color:#53637e; }
+    .split-page .split-field small { display:block; margin-top:5px; color:#7d8da6; font-size:11px; line-height:1.5; }
+    .split-page .split-mode-explainer { display:grid; grid-template-columns:minmax(0,1.1fr) minmax(180px,.5fr) minmax(220px,.8fr); gap:18px; align-items:center; margin-top:20px; padding:18px; border:1px solid #dce6f6; border-radius:12px; background:#f8faff; min-width:0; }
+    .split-page .split-mode-explainer h3 { margin:0 0 6px; font-size:14px; color:#1d2b43; }
+    .split-page .split-mode-explainer p { margin:0; color:#71819a; font-size:12px; line-height:1.65; }
+    .split-page .split-percentage-preview { display:grid; gap:9px; min-width:0; }
+    .split-page .split-percentage-preview > div { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:10px 12px; border:1px solid #e0e8f5; border-radius:9px; background:#fff; }
+    .split-page .split-percentage-preview span, .split-page .split-amount-summary span { color:#62738e; font-size:12px; }
+    .split-page .split-percentage-preview strong { white-space:nowrap; font-size:13px; }
+    .split-page .split-participants-section { margin-top:24px; min-width:0; }
+    .split-page .split-section-heading { display:flex; align-items:center; justify-content:space-between; gap:14px; margin-bottom:14px; min-width:0; }
+    .split-page .split-section-heading h3 { margin:0 0 4px; color:#1d2b43; font-size:15px; }
+    .split-page .split-section-heading p { margin:0; color:#7d8da6; font-size:12px; line-height:1.6; }
+    .split-page .split-small-button { width:auto !important; min-width:0; min-height:36px; padding:8px 12px; flex:0 0 auto; white-space:normal; }
+    .split-page .split-participant-card { margin:0 0 12px; padding:16px; border:1px solid #e0e8f5; border-radius:12px; background:#f8faff; min-width:0; }
+    .split-page .split-participant-title { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }
+    .split-page .split-participant-title strong { color:#263752; font-size:13px; }
+    .split-page .split-participant-title span { color:#4668ad; font-size:11px; font-weight:700; }
+    .split-page .split-participant-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:13px 12px; min-width:0; }
+    .split-page .split-participant-actions { display:flex; justify-content:flex-end; margin-top:12px; }
+    .split-page .split-amount-summary { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; margin-top:18px; padding:15px 16px; border:1px solid #d9e7f8; border-radius:12px; min-width:0; }
+    .split-page .split-amount-summary > div { display:flex; flex-direction:column; gap:4px; min-width:0; }
+    .split-page .split-amount-summary strong { color:#172033; font-size:15px; overflow-wrap:anywhere; }
+    .split-page .split-amount-summary p { grid-column:1/-1; margin:0; font-size:12px; line-height:1.5; }
+    .split-page .split-amount-summary.is-valid, .split-page .split-validation-box.is-valid { background:#effaf3; border-color:#cfeeda; }
+    .split-page .split-amount-summary.is-valid p { color:#168352; }
+    .split-page .split-amount-summary.is-invalid, .split-page .split-validation-box.is-invalid { background:#fff7ed; border-color:#fed7aa; }
+    .split-page .split-amount-summary.is-invalid p { color:#b45309; }
+    .split-page .split-create-button { width:100%; margin-top:14px; }
+    .split-page .split-history-panel, .split-page .split-details-panel { margin-top:0; }
+    .split-page .split-record-count { color:#71819a; font-size:12px; white-space:nowrap; }
+    .split-page .split-history-table-wrap { width:100%; max-width:100%; min-width:0; overflow-x:auto; border:1px solid #e5ebf4; border-radius:10px; }
+    .split-page .split-history-table { width:100%; min-width:690px; background:#fff; text-align:left; }
+    .split-page .split-history-table th { padding:13px 14px; background:#f7f9fd; color:#71819a; font-size:11px; font-weight:800; white-space:nowrap; }
+    .split-page .split-history-table td { padding:13px 14px; border-top:1px solid #edf1f7; color:#34435b; font-size:12px; vertical-align:middle; overflow-wrap:anywhere; }
+    .split-page .split-history-table tr.is-selected td { background:#f3f7ff; }
+    .split-page .split-history-table .secondary-button { margin:0; }
+    .split-page .split-allocation-table-wrap { width:100%; max-width:100%; min-width:0; overflow-x:auto; border:1px solid #e1e8f3; border-radius:13px; background:#fff; box-shadow:0 5px 18px rgba(25,48,86,.035); }
+    .split-page .split-allocation-table { width:100%; min-width:1280px; border-collapse:separate; border-spacing:0; text-align:left; }
+    .split-page .split-allocation-table th { position:sticky; top:0; z-index:1; padding:14px 13px; background:#f5f8fd; border-bottom:1px solid #e2e9f4; color:#667792; font-size:10px; font-weight:800; letter-spacing:.055em; text-transform:uppercase; white-space:nowrap; }
+    .split-page .split-allocation-table td { padding:14px 13px; border-bottom:1px solid #edf1f7; color:#34435b; font-size:12px; vertical-align:top; }
+    .split-page .split-allocation-table tbody tr:last-child td { border-bottom:0; }
+    .split-page .split-allocation-table tbody tr:hover td { background:#fbfcff; }
+    .split-page .split-allocation-person-cell { min-width:155px; }
+    .split-page .split-allocation-person-cell strong, .split-page .split-allocation-person-cell span, .split-page .split-allocation-person-cell small { display:block; }
+    .split-page .split-allocation-person-cell strong { color:#1d2b43; font-size:12px; margin-bottom:5px; }
+    .split-page .split-allocation-person-cell span { color:#526581; font-size:10px; font-weight:700; }
+    .split-page .split-allocation-person-cell small { margin-top:5px; color:#8492a8; font-size:10px; }
+    .split-page .split-money-cell { white-space:nowrap; }
+    .split-page .split-money-cell strong { color:#1d2b43; }
+    .split-page .split-payment-id { display:inline-block; padding:4px 7px; border-radius:6px; background:#f2f5fa; color:#4c5e79; font-size:11px; font-weight:700; }
+    .split-page .split-muted { color:#8a97aa; font-size:11px; }
+    .split-page .split-verified-caption { display:block; margin-top:6px; color:#168352; font-size:10px; }
+    .split-page .split-recipient-cell { min-width:205px; }
+    .split-page .split-recipient-fields { display:grid; gap:8px; min-width:185px; }
+    .split-page .split-recipient-fields label { display:grid; gap:4px; color:#75849b; font-size:10px; font-weight:700; }
+    .split-page .split-recipient-fields input { width:100%; min-width:0; min-height:33px; box-sizing:border-box; padding:7px 9px; border:1px solid #dce4f0; border-radius:7px; background:#fff; color:#263752; font:inherit; font-size:11px; }
+    .split-page .split-recipient-fields input:focus { outline:2px solid rgba(49,101,230,.15); border-color:#7da0f8; }
+    .split-page .split-field-hint { color:#9a6a18; font-size:10px; line-height:1.45; }
+    .split-page .split-link-cell { min-width:165px; max-width:220px; }
+    .split-page .split-link-summary { display:grid; justify-items:start; gap:5px; }
+    .split-page .split-link-summary strong { color:#263752; font-size:11px; }
+    .split-page .split-link-summary span, .split-page .split-link-summary small { color:#71819a; font-size:10px; overflow-wrap:anywhere; }
+    .split-page .split-link-summary .split-inline-error { color:#b42318; }
+    .split-page .split-checkout-link { display:inline-flex; margin-top:2px; color:#245de8; font-size:11px; font-weight:700; text-decoration:none; }
+    .split-page .split-checkout-link:hover { text-decoration:underline; }
+    .split-page .split-actions-cell { min-width:195px; }
+    .split-page .split-row-actions { display:flex; flex-direction:column; align-items:flex-start; gap:7px; min-width:175px; }
+    .split-page .split-row-actions .split-small-button { width:100% !important; justify-content:center; }
+    .split-page .split-regenerate-button { background:#245de8; }
+    .split-page .split-action-complete { display:inline-flex; align-items:center; gap:6px; padding:7px 10px; border-radius:8px; background:#e8f8ef; color:#168352; font-size:11px; font-weight:800; }
+    .split-page .split-action-hint { color:#7a899f; font-size:10px; line-height:1.5; }
+    .split-page .split-table-empty { padding:28px !important; color:#7d8da6 !important; text-align:center; }
+    .split-page .split-status { display:inline-flex; align-items:center; justify-content:center; max-width:100%; padding:5px 9px; border-radius:20px; background:#eef2f7; color:#52617a; font-size:10px; font-weight:800; line-height:1.3; overflow-wrap:anywhere; }
+    .split-page .split-status.success, .split-page .split-status.paid { background:#e7f8ef; color:#147d4e; }
+    .split-page .split-status.pending, .split-page .split-status.created { background:#fff4d8; color:#95610b; }
+    .split-page .split-status.failed, .split-page .split-status.cancelled, .split-page .split-status.delivery_failed { background:#ffebeb; color:#b42318; }
+    .split-page .split-details-heading { align-items:center; }
+    .split-page .split-detail-actions { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+    .split-page .split-next-steps { margin:0 0 18px; padding:16px 18px; border:1px solid #dce6f6; border-radius:12px; background:#f8faff; }
+    .split-page .split-next-steps > strong { color:#1d2b43; font-size:13px; }
+    .split-page .split-next-steps ol { margin:8px 0 0; padding-left:20px; color:#65758e; font-size:12px; line-height:1.8; }
+    .split-page .split-validation-box { margin:0 0 18px; padding:14px 16px; border:1px solid #dce6f6; border-radius:10px; background:#f7faff; }
+    .split-page .split-validation-box strong { display:block; font-size:13px; }
+    .split-page .split-validation-box p { margin:5px 0; font-size:12px; }
+    .split-page .split-validation-box small { color:#6b7b94; font-size:11px; }
+    .split-page .split-allocation-list { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; min-width:0; }
+    .split-page .split-allocation-card { min-width:0; padding:17px; border:1px solid #e1e8f3; border-radius:13px; background:#fff; box-shadow:0 3px 12px rgba(25,48,86,.025); }
+    .split-page .split-allocation-topline { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; min-width:0; }
+    .split-page .split-allocation-topline > div { min-width:0; }
+    .split-page .split-allocation-id { color:#71819a; font-size:10px; font-weight:800; letter-spacing:.4px; text-transform:uppercase; }
+    .split-page .split-allocation-topline h3 { margin:4px 0; color:#1d2b43; font-size:15px; overflow-wrap:anywhere; }
+    .split-page .split-allocation-topline p { margin:0; color:#7d8da6; font-size:11px; }
+    .split-page .split-allocation-money-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin:16px 0; }
+    .split-page .split-allocation-money-grid > div { min-width:0; padding:10px; border-radius:9px; background:#f6f8fc; }
+    .split-page .split-allocation-money-grid span, .split-page .split-allocation-money-grid strong { display:block; }
+    .split-page .split-allocation-money-grid span { margin-bottom:4px; color:#71819a; font-size:10px; }
+    .split-page .split-allocation-money-grid strong { color:#23334d; font-size:12px; overflow-wrap:anywhere; }
+    .split-page .split-contact-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; min-width:0; }
+    .split-page .split-link-result { display:flex; flex-direction:column; align-items:flex-start; gap:5px; margin-top:14px; padding:12px; border:1px solid #e1eaf8; border-radius:10px; background:#f8faff; min-width:0; }
+    .split-page .split-link-result strong { font-size:12px; color:#24334d; }
+    .split-page .split-link-result span, .split-page .split-link-result small { color:#6d7e98; font-size:11px; overflow-wrap:anywhere; }
+    .split-page .split-link-result .split-inline-error { color:#b42318; }
+    .split-page .split-open-checkout { display:inline-flex; margin-top:4px; }
+    .split-page .split-allocation-actions { display:flex; align-items:center; gap:9px; flex-wrap:wrap; margin-top:14px; }
+    .split-page .split-pending-note, .split-page .split-paid-note { color:#62738e; font-size:11px; line-height:1.6; }
+    .split-page .split-paid-note { color:#168352; font-weight:700; }
+    .split-page .split-contact-note { margin:14px 0 0; color:#8190a8; font-size:11px; line-height:1.7; }
+    .split-page .split-empty-state { margin:0; padding:18px; color:#7d8da6; font-size:12px; text-align:center; }
+    .split-page .split-message { margin:0; }
+    @media (max-width: 1120px) {
+      .split-page > .welcome { flex-wrap:wrap; }
+      .split-page .split-refresh-button { align-self:flex-start; }
+      .split-page .split-main-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+      .split-page .split-mode-explainer { grid-template-columns:repeat(2,minmax(0,1fr)); }
+      .split-page .split-percentage-preview { grid-column:1/-1; grid-template-columns:repeat(2,minmax(0,1fr)); }
+      .split-page .split-allocation-list { grid-template-columns:minmax(0,1fr); }
+    }
+    @media (max-width: 700px) {
+      .split-page { gap:14px; }
+      .split-page > .welcome { flex-wrap:wrap; align-items:flex-start; }
+      .split-page .split-refresh-button { align-self:flex-start; }
+      .split-page .split-main-grid, .split-page .split-participant-grid, .split-page .split-contact-grid, .split-page .split-mode-explainer { grid-template-columns:minmax(0,1fr); }
+      .split-page .split-percentage-preview { grid-column:auto; grid-template-columns:minmax(0,1fr); }
+      .split-page .split-amount-summary { grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; padding:12px; }
+      .split-page .split-amount-summary strong { font-size:13px; }
+      .split-page .split-details-heading { align-items:flex-start; flex-direction:column; }
+      .split-page .split-detail-actions { justify-content:flex-start; }
+      .split-page .split-allocation-money-grid { grid-template-columns:repeat(3,minmax(0,1fr)); }
+      .split-page .split-section-heading { align-items:flex-start; }
+      .split-page .panel { padding:18px; }
+    }
+    @media (max-width: 420px) {
+      .split-page .split-amount-summary { grid-template-columns:minmax(0,1fr); }
+      .split-page .split-amount-summary p { grid-column:auto; }
+      .split-page .split-allocation-money-grid { grid-template-columns:minmax(0,1fr); }
+      .split-page .split-section-heading { flex-direction:column; }
+    }
+  `
+  const emptyParticipant = () => ({
+    participantName: '',
+    email: '',
+    phone: '',
+    participantType: 'FRIEND',
+    allocationAmount: '',
+  })
+
+  const [splitType, setSplitType] = useState('RESTAURANT_BILL')
+  const [splitScope, setSplitScope] = useState('PERSONAL')
+  const [organizationId, setOrganizationId] = useState('ORG-LOCAL-TEST-001')
+  const [businessCategoryId, setBusinessCategoryId] = useState('')
+  const [businessCategories, setBusinessCategories] = useState([])
+  const [categoriesLoading, setCategoriesLoading] = useState(false)
+  const [categoriesError, setCategoriesError] = useState('')
+  const [totalAmount, setTotalAmount] = useState('')
+  const [paymentMode, setPaymentMode] = useState('INDIVIDUAL')
+  const [platformFeePercentage, setPlatformFeePercentage] = useState('10')
+  const [participants, setParticipants] = useState([emptyParticipant(), emptyParticipant()])
+  const [history, setHistory] = useState([])
+  const [selectedSplit, setSelectedSplit] = useState(null)
+  const [allocationQrModal, setAllocationQrModal] = useState(null)
+  const [allocations, setAllocations] = useState([])
+  const [allocationContacts, setAllocationContacts] = useState({})
+  const [paymentLinks, setPaymentLinks] = useState({})
+  const [verifiedGatewayStatuses, setVerifiedGatewayStatuses] = useState({})
+  const [validation, setValidation] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [historyLoading, setHistoryLoading] = useState(false)
+  const [detailsLoading, setDetailsLoading] = useState(false)
+  const [linkLoadingId, setLinkLoadingId] = useState(null)
+  const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    async function loadBusinessCategories() {
+      setCategoriesLoading(true)
+      setCategoriesError('')
+      try {
+        const result = await getBusinessCategories()
+        const rows = Array.isArray(result) ? result : []
+        if (!cancelled) {
+          setBusinessCategories(rows.filter((item) => String(item.status || '').toUpperCase() === 'ACTIVE'))
+        }
+      } catch (err) {
+        if (!cancelled) setCategoriesError(err.message || 'Unable to load business categories.')
+      } finally {
+        if (!cancelled) setCategoriesLoading(false)
+      }
+    }
+    loadBusinessCategories()
+    return () => { cancelled = true }
+  }, [])
+
+  const selectedBusinessCategory = businessCategories.find(
+    (category) => String(category.id) === String(businessCategoryId)
+  )
+
+  const money = (value) => new Intl.NumberFormat('en-IN', {
+    style: 'currency',
+    currency: 'INR',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(Number(value) || 0)
+
+  const toCents = (value) => Math.round((Number(value) || 0) * 100)
+  const isPercentageMode = paymentMode === 'PERCENTAGE'
+  const visibleParticipants = paymentMode === 'ONE_PAYS' ? participants.slice(0, 1) : participants
+  const manualAllocatedCents = visibleParticipants.reduce((sum, participant) => {
+    const amount = paymentMode === 'ONE_PAYS' ? totalAmount : participant.allocationAmount
+    return sum + toCents(amount)
+  }, 0)
+  const totalCents = toCents(totalAmount)
+  const remainingCents = totalCents - (isPercentageMode ? totalCents : manualAllocatedCents)
+  const platformCents = Math.round(totalCents * (Number(platformFeePercentage) || 0) / 100)
+  const merchantCents = totalCents - platformCents
+  const amountMatches = isPercentageMode
+    ? totalCents > 0 && Number(platformFeePercentage) > 0 && Number(platformFeePercentage) < 100
+    : totalCents > 0 && remainingCents === 0
+
+  async function apiCall(path, options = {}) {
+    const response = await fetch(`${API_BASE_URL}${path}`, {
+      ...options,
+      headers: {
+        ...getAuthHeaders(),
+        ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+        ...(options.headers || {}),
+      },
+    })
+
+    const raw = await response.text()
+    let data = raw
+    try {
+      data = raw ? JSON.parse(raw) : null
+    } catch {
+      // Some API errors are returned as plain text.
+    }
+
+    if (!response.ok) {
+      if (response.status === 401) throw new Error('Your login has expired. Sign in again and retry.')
+      if (response.status === 403) throw new Error('Your account is not allowed to perform this action.')
+      const message = typeof data === 'string'
+        ? data
+        : (data?.message || data?.error || `Request failed (HTTP ${response.status})`)
+      throw new Error(message)
+    }
+    return data
+  }
+
+  async function fetchHistory() {
+    const result = await apiCall('/payment-splits')
+    const records = Array.isArray(result) ? result : []
+    setHistory(records)
+    return records
+  }
+
+  async function loadHistory() {
+    setError('')
+    setHistoryLoading(true)
+    try {
+      await fetchHistory()
+    } catch (err) {
+      setError(`Unable to load split history: ${err.message}`)
+    } finally {
+      setHistoryLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    loadHistory()
+    // Initial load only. Refresh is available from the page header.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  function updateParticipant(index, field, value) {
+    setParticipants((current) => current.map((participant, participantIndex) => (
+      participantIndex === index ? { ...participant, [field]: value } : participant
+    )))
+  }
+
+  function addParticipant() {
+    setParticipants((current) => [...current, emptyParticipant()])
+  }
+
+  function applyEqualSplit() {
+    const total = Number(totalAmount)
+    if (!total || total <= 0) {
+      setError('Please enter a valid total amount before applying an equal split.')
+      return
+    }
+    if (!participants || participants.length === 0) return
+
+    const count = participants.length
+    const baseShare = Math.floor((total / count) * 100) / 100
+    let remainder = Math.round((total - (baseShare * count)) * 100) / 100
+
+    setParticipants(current => current.map((p, idx) => {
+      // Allocate the remaining cents to the first participant to guarantee exact balance
+      const share = idx === 0 ? Number((baseShare + remainder).toFixed(2)) : baseShare
+      return {
+        ...p,
+        allocationAmount: String(share)
+      }
+    }))
+    setPaymentMode('INDIVIDUAL')
+  }
+
+  function removeParticipant(index) {
+    setParticipants((current) => current.length <= 1
+      ? current
+      : current.filter((_, participantIndex) => participantIndex !== index))
+  }
+
+  function validateContact(participant, index) {
+    const name = participant.participantName.trim()
+    const email = participant.email.trim()
+    const digits = participant.phone.replace(/\D/g, '')
+    if (!name) return `Enter a name for participant ${index + 1}.`
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return `Enter a valid email for ${name}.`
+    if (!(digits.length === 10 || (digits.length === 12 && digits.startsWith('91')))) {
+      return `Enter a valid 10-digit Indian mobile number for ${name}.`
+    }
+    return ''
+  }
+
+  async function createSplit() {
+    setError('')
+    setNotice('')
+    setValidation(null)
+
+    if (!Number.isFinite(Number(totalAmount)) || Number(totalAmount) <= 0) {
+      setError('Enter a total amount greater than zero.')
+      return
+    }
+
+    if (splitScope === 'BUSINESS') {
+      if (!organizationId.trim()) {
+        setError('Enter the organization ID where you have an active OWNER, ADMIN, or MANAGER membership.')
+        return
+      }
+      if (!businessCategoryId) {
+        setError('Select one of the 12 active business sectors.')
+        return
+      }
+      if (!businessCategories.some((category) => String(category.id) === String(businessCategoryId))) {
+        setError('The selected business category is unavailable. Refresh the page and select an active category.')
+        return
+      }
+    }
+
+    if (isPercentageMode) {
+      const feePercentage = Number(platformFeePercentage)
+      if (!Number.isFinite(feePercentage) || feePercentage <= 0 || feePercentage >= 100) {
+        setError('Platform fee must be greater than 0% and less than 100%.')
+        return
+      }
+    } else {
+      if (visibleParticipants.length < 1) {
+        setError('Add at least one participant.')
+        return
+      }
+      for (let index = 0; index < visibleParticipants.length; index += 1) {
+        const contactError = validateContact(visibleParticipants[index], index)
+        if (contactError) {
+          setError(contactError)
+          return
+        }
+      }
+      if (visibleParticipants.some((participant) => !Number.isFinite(Number(participant.allocationAmount)) || Number(participant.allocationAmount) <= 0) && paymentMode !== 'ONE_PAYS') {
+        setError('Every share amount must be greater than zero.')
+        return
+      }
+      if (paymentMode === 'INDIVIDUAL' && remainingCents !== 0) {
+        setError(`Participant shares must equal the total bill. Remaining: ${money(remainingCents / 100)}.`)
+        return
+      }
+    }
+
+    setLoading(true)
+    let created = null
+    try {
+      const createResponse = await apiCall('/payment-splits', {
+        method: 'POST',
+        body: JSON.stringify({
+          splitType,
+          totalAmount: Number(totalAmount),
+          currencyCode: 'INR',
+          paymentMode,
+          platformFeePercentage: isPercentageMode ? Number(platformFeePercentage) : null,
+          splitScope,
+          organizationId: splitScope === 'BUSINESS' ? organizationId.trim() : null,
+          businessCategoryId: splitScope === 'BUSINESS' ? Number(businessCategoryId) : null,
+        }),
+      })
+
+      // The backend returns CreateSplitResponse as { split, allocations }.
+      // Normalize it, while remaining compatible with a flat split response.
+      created = createResponse?.split ?? createResponse?.masterBill ?? createResponse
+      if (!created?.id) {
+        throw new Error('The split API response did not include a split ID. Inspect the response before retrying to avoid duplicates.')
+      }
+
+      setSelectedSplit(created)
+      setValidation(null)
+      setPaymentLinks({})
+
+      if (!isPercentageMode) {
+        for (let index = 0; index < visibleParticipants.length; index += 1) {
+          const participant = visibleParticipants[index]
+          const amount = paymentMode === 'ONE_PAYS' ? Number(totalAmount) : Number(participant.allocationAmount)
+          const percent = Number(totalAmount) > 0 ? Number(((amount / Number(totalAmount)) * 100).toFixed(2)) : null
+          const allocation = await apiCall(`/payment-splits/${created.id}/allocations`, {
+            method: 'POST',
+            body: JSON.stringify({
+              participantName: participant.participantName.trim(),
+              participantType: participant.participantType,
+              allocationAmount: amount,
+              allocationPercentage: paymentMode === 'ONE_PAYS' ? 100 : percent,
+            }),
+          })
+          const savedContact = {
+            id: allocation.id,
+            email: participant.email.trim(),
+            phone: participant.phone.trim(),
+          }
+          setAllocationContacts((current) => ({
+            ...current,
+            [savedContact.id]: { email: savedContact.email, phone: savedContact.phone },
+          }))
+        }
+      }
+
+      const savedAllocations = await apiCall(`/payment-splits/${created.id}/allocations`)
+      setAllocations(Array.isArray(savedAllocations) ? savedAllocations : [])
+      await fetchHistory().catch(() => {})
+      setNotice(isPercentageMode
+        ? `Split #${created.id} created. Your backend generated Merchant and Platform Fee allocations. Enter the contact details for each recipient below, then generate their payment requests.`
+        : `Split #${created.id} and its allocations are saved. Next, open each allocation below to confirm the contact details and generate its SabbPe payment link.`)
+      setTimeout(() => document.getElementById('split-details')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50)
+    } catch (err) {
+      if (created?.id) {
+        // A split may already exist even if adding a later allocation failed.
+        // Reload persisted state so the user can inspect it instead of creating a duplicate.
+        try {
+          setSelectedSplit(created)
+          const savedAllocations = await apiCall(`/payment-splits/${created.id}/allocations`)
+          setAllocations(Array.isArray(savedAllocations) ? savedAllocations : [])
+          await fetchHistory()
+        } catch {
+          // Keep the primary error below; don't hide it with a secondary refresh error.
+        }
+        setError(`Split #${created.id} was created, but the allocation process did not fully complete: ${err.message}. Inspect the split below or in history before retrying; do not create it again blindly.`)
+      } else {
+        setError(`Split was not created: ${err.message}`)
+      }
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function openExistingSplit(item) {
+    setError('')
+    setNotice('')
+    setValidation(null)
+    setDetailsLoading(true)
+    try {
+      const result = await apiCall(`/payment-splits/${item.id}/allocations`)
+      setSelectedSplit(item)
+      setAllocations(Array.isArray(result) ? result : [])
+      setPaymentLinks({})
+    } catch (err) {
+      setError(`Unable to load split #${item.id}: ${err.message}`)
+    } finally {
+      setDetailsLoading(false)
+    }
+  }
+
+  async function validateCurrentSplit() {
+    if (!selectedSplit?.id) return
+    setError('')
+    setNotice('')
+    try {
+      const result = await apiCall(`/payment-splits/${selectedSplit.id}/validate`)
+      setValidation(result)
+      setNotice(result?.message || 'Allocation validation completed.')
+    } catch (err) {
+      setError(`Validation failed: ${err.message}`)
+    }
+  }
+
+  function getPaymentId(result) {
+    const candidates = [
+      result?.paymentId,
+      result?.payment_id,
+      result?.payment?.id,
+      result?.data?.paymentId,
+      result?.data?.payment_id,
+      result?.data?.payment?.id,
+      result?.data?.id,
+      result?.id,
+    ]
+    for (const value of candidates) {
+      const number = Number(value)
+      if (Number.isInteger(number) && number > 0) return number
+    }
+    return null
+  }
+
+  function getCheckoutUrl(result) {
+    const keys = ['checkoutUrl', 'checkout_url', 'paymentUrl', 'payment_url', 'paymentLink', 'payment_link', 'redirectUrl', 'redirect_url', 'url', 'link']
+    const seen = new Set()
+    function search(value, depth = 0) {
+      if (typeof value === 'string') return /^https?:\/\//i.test(value) ? value : ''
+      if (!value || typeof value !== 'object' || depth > 4 || seen.has(value)) return ''
+      seen.add(value)
+      for (const key of keys) {
+        const candidate = value[key]
+        if (typeof candidate === 'string' && /^https?:\/\//i.test(candidate)) return candidate
+      }
+      for (const child of Object.values(value)) {
+        const found = search(child, depth + 1)
+        if (found) return found
+      }
+      return ''
+    }
+    return search(result)
+  }
+
+  async function linkPaymentToAllocation(allocation, paymentId) {
+    return apiCall(`/payment-splits/${selectedSplit.id}/allocations/${allocation.id}/payments/${paymentId}/link`, {
+      method: 'POST',
+    })
+  }
+
+  async function retryPaymentLinking(allocation) {
+    const stored = paymentLinks[allocation.id]
+    const paymentId = stored?.paymentId
+    if (!paymentId || !selectedSplit?.id) return
+    setError('')
+    setNotice('')
+    setLinkLoadingId(allocation.id)
+    try {
+      await linkPaymentToAllocation(allocation, paymentId)
+      const updated = await apiCall(`/payment-splits/${selectedSplit.id}/allocations`)
+      setAllocations(Array.isArray(updated) ? updated : [])
+      setPaymentLinks((current) => ({ ...current, [allocation.id]: { ...current[allocation.id], allocationLinked: true, linkError: '' } }))
+      await fetchHistory().catch(() => {})
+      setNotice(`Payment #${paymentId} is now linked to allocation #${allocation.id}. It remains pending until SabbPe verifies the payment.`)
+    } catch (err) {
+      setPaymentLinks((current) => ({ ...current, [allocation.id]: { ...current[allocation.id], linkError: err.message } }))
+      setError(`Payment request exists, but it could not be linked to allocation #${allocation.id}: ${err.message}. Use Retry link instead of generating another payment.`)
+    } finally {
+      setLinkLoadingId(null)
+    }
+  }
+
+  async function checkAllocationStatus(allocation) {
+    const paymentId = Number(allocation.paymentId || paymentLinks[allocation.id]?.paymentId)
+    if (!Number.isInteger(paymentId) || paymentId <= 0) {
+      setError('No saved payment ID is available for this allocation.')
+      return
+    }
+
+    setError('')
+    setNotice('')
+    setLinkLoadingId(allocation.id)
+    try {
+      // This endpoint queries SabbPe and validates the response against the saved payment.
+      // A failed request does not change local payment status or authorize regeneration.
+      const result = await apiCall(`/sabbpe/payments/${paymentId}/status`)
+      const gatewayStatus = String(
+        result?.paymentStatus || result?.payment_status || result?.status || ''
+      ).trim().toUpperCase()
+
+      if (!['SUCCESS', 'PENDING', 'FAILED', 'CANCELLED', 'TIMEOUT', 'REFUNDED'].includes(gatewayStatus)) {
+        throw new Error('SabbPe did not return a supported payment status.')
+      }
+
+      setVerifiedGatewayStatuses((current) => ({
+        ...current,
+        [allocation.id]: { paymentId, status: gatewayStatus, checkedAt: new Date().toISOString() },
+      }))
+
+      if (gatewayStatus === 'SUCCESS') {
+        setNotice(`SabbPe confirms payment #${paymentId} is SUCCESS. Refresh statuses to reconcile the saved payment and allocation.`)
+      } else if (['FAILED', 'CANCELLED', 'TIMEOUT'].includes(gatewayStatus)) {
+        setNotice(`SabbPe confirms payment #${paymentId} is ${gatewayStatus}. You may request a replacement link; the backend must verify the previous payment again before linking it.`)
+      } else if (gatewayStatus === 'PENDING') {
+        setNotice(`Payment #${paymentId} is still PENDING at SabbPe. Keep the existing link and check again later. Do not regenerate while the payment remains pending.`)
+      } else {
+        setNotice(`SabbPe reports payment #${paymentId} as REFUNDED. A replacement link is not enabled automatically.`)
+      }
+    } catch (err) {
+      setVerifiedGatewayStatuses((current) => {
+        const next = { ...current }
+        delete next[allocation.id]
+        return next
+      })
+      setError(`Unable to verify allocation #${allocation.id} directly with SabbPe: ${err.message}. No replacement link was created.`)
+    } finally {
+      setLinkLoadingId(null)
+    }
+  }
+
+  async function generateGatewayAllocationQr(allocation) {
+    if (!selectedSplit?.id) return
+    setError('')
+    setLinkLoadingId(allocation.id)
+    try {
+      const contact = allocationContacts[allocation.id] || {}
+      const res = await createSplitAllocationGatewayPayment(selectedSplit.id, allocation.id, {
+        email: contact.email || undefined,
+        phone: contact.phone || undefined,
+      })
+      if (!res?.paymentUrl) {
+        throw new Error('No payment URL returned for this allocation.')
+      }
+      setAllocationQrModal({
+        allocationId: allocation.id,
+        participantName: allocation.participantName,
+        amount: allocation.allocationAmount,
+        paymentUrl: res.paymentUrl,
+        merchantOrderRef: res.merchantOrderRef,
+        status: res.status
+      })
+      await loadSplitDetails(selectedSplit.id)
+    } catch (err) {
+      setError(err.message || 'Failed to generate Gateway QR for allocation.')
+    } finally {
+      setLinkLoadingId(null)
+    }
+  }
+
+  async function generateLink(allocation, { regenerate = false } = {}) {
+    if (!selectedSplit?.id) {
+      setError('Open a saved split before generating payment links.')
+      return
+    }
+    const contact = allocationContacts[allocation.id] || {}
+    const email = (contact.email || '').trim()
+    const phone = (contact.phone || '').trim()
+    if (!allocation.participantName?.trim()) {
+      setError(`Allocation #${allocation.id} has no participant name. Review the allocation in the backend first.`)
+      return
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      setError(`Enter a valid email address for ${allocation.participantName}.`)
+      return
+    }
+    const digits = phone.replace(/\D/g, '')
+    if (!(digits.length === 10 || (digits.length === 12 && digits.startsWith('91')))) {
+      setError(`Enter a valid 10-digit Indian mobile number for ${allocation.participantName}.`)
+      return
+    }
+    if (allocation.paymentId && !regenerate) {
+      setError(`Allocation #${allocation.id} already has payment #${allocation.paymentId}. Check its status with SabbPe before requesting a replacement link.`)
+      return
+    }
+
+    const verifiedStatus = verifiedGatewayStatuses[allocation.id]
+    if (regenerate) {
+      if (!allocation.paymentId
+          || !verifiedStatus
+          || Number(verifiedStatus.paymentId) !== Number(allocation.paymentId)
+          || !['FAILED', 'CANCELLED', 'TIMEOUT'].includes(verifiedStatus.status)) {
+        setError('A replacement link is allowed only after SabbPe directly confirms the existing payment is FAILED, CANCELLED, or TIMEOUT.')
+        return
+      }
+    }
+
+    setError('')
+    setNotice('')
+    setLinkLoadingId(allocation.id)
+    try {
+      const result = await createSabbPePayment({
+        customerName: allocation.participantName,
+        amount: Number(allocation.allocationAmount),
+        productInfo: `Split Payment ${selectedSplit.id} ${allocation.participantName}`,
+        email,
+        phone,
+        splitId: Number(selectedSplit.id),
+        allocationId: Number(allocation.id),
+      })
+      const paymentId = getPaymentId(result)
+      const allocationLinked = Boolean(
+        result
+        && Number(result.splitId) === Number(selectedSplit.id)
+        && Number(result.allocationId) === Number(allocation.id)
+      )
+      const enriched = {
+        ...(result && typeof result === 'object' ? result : { response: result }),
+        paymentId,
+        checkoutUrl: getCheckoutUrl(result),
+        allocationLinked,
+        linkError: '',
+      }
+      setPaymentLinks((current) => ({ ...current, [allocation.id]: enriched }))
+      if (regenerate) {
+        setVerifiedGatewayStatuses((current) => {
+          const next = { ...current }
+          delete next[allocation.id]
+          return next
+        })
+      }
+
+      // SabbPePaymentService links splitId/allocationId inside the successful API call.
+      // Avoid a second link request, which can race a fast callback/status transition.
+      const refreshedAllocations = await apiCall(`/payment-splits/${selectedSplit.id}/allocations`)
+      setAllocations(Array.isArray(refreshedAllocations) ? refreshedAllocations : [])
+      await fetchHistory().catch(() => {})
+
+      if (!paymentId) {
+        setNotice(`SabbPe accepted the request for ${allocation.participantName}, but the response did not include a readable payment ID. Review the response below; the allocation was not marked paid.`)
+      } else if (enriched.linkError) {
+        setNotice(`SabbPe created payment #${paymentId}, but the allocation link needs attention. Use Retry link below; don't generate another request.`)
+      } else {
+        setNotice(`Payment request #${paymentId} created${enriched.checkoutUrl ? ' and linked to the allocation' : '. The backend did not return a checkout URL; check its delivery result below'}. The allocation remains pending until payment status is verified.`)
+      }
+    } catch (err) {
+      setError(`Unable to create SabbPe payment request: ${err.message}`)
+    } finally {
+      setLinkLoadingId(null)
+    }
+  }
+
+  async function refreshCurrentAllocations({ syncConfirmedPayments = true } = {}) {
+    if (!selectedSplit?.id) return { syncMessages: [] }
+    let current = await apiCall(`/payment-splits/${selectedSplit.id}/allocations`)
+    current = Array.isArray(current) ? current : []
+    const syncMessages = []
+
+    if (syncConfirmedPayments) {
+      for (const allocation of current) {
+        const paymentId = Number(allocation.paymentId)
+        if (!paymentId || String(allocation.status || '').toUpperCase() === 'SUCCESS') continue
+        try {
+          const payment = await apiCall(`/payments/${paymentId}`)
+          const paymentStatus = String(payment?.status || payment?.paymentStatus || '').toUpperCase()
+          if (paymentStatus === 'SUCCESS') {
+            await apiCall(`/payment-splits/${selectedSplit.id}/allocations/${allocation.id}/payments/${paymentId}`, { method: 'POST' })
+            syncMessages.push(`Verified payment #${paymentId} and synced allocation #${allocation.id}.`)
+          }
+        } catch (err) {
+          syncMessages.push(`Could not reconcile allocation #${allocation.id}: ${err.message}`)
+        }
+      }
+      current = await apiCall(`/payment-splits/${selectedSplit.id}/allocations`)
+      current = Array.isArray(current) ? current : []
+    }
+
+    setAllocations(current)
+    return { syncMessages }
+  }
+
+  async function refreshEverything() {
+    setError('')
+    setNotice('')
+    setHistoryLoading(true)
+    try {
+      await fetchHistory()
+      let syncMessages = []
+      if (selectedSplit?.id) {
+        const refreshed = await refreshCurrentAllocations({ syncConfirmedPayments: true })
+        syncMessages = refreshed.syncMessages
+        const updatedHistory = await fetchHistory()
+        const refreshedSelected = updatedHistory.find((item) => Number(item.id) === Number(selectedSplit.id))
+        if (refreshedSelected) setSelectedSplit(refreshedSelected)
+      }
+      const reconciliationWarning = syncMessages.find((message) => message.startsWith('Could not reconcile'))
+      setNotice(reconciliationWarning
+        ? `History refreshed, but one or more payment allocations could not be reconciled. Details: ${reconciliationWarning}`
+        : selectedSplit?.id
+          ? 'Split history and selected allocations refreshed from the backend. A SUCCESS payment is copied to its allocation only after the Payment API confirms SUCCESS.'
+          : 'Split history refreshed from the backend. Open a split to refresh its allocations and reconcile verified payments.')
+    } catch (err) {
+      setError(`Refresh failed: ${err.message}`)
+    } finally {
+      setHistoryLoading(false)
+    }
+  }
+
+  async function refreshSelectedSplit() {
+    if (!selectedSplit?.id) return
+    setError('')
+    setNotice('')
+    setDetailsLoading(true)
+    try {
+      const refreshed = await refreshCurrentAllocations({ syncConfirmedPayments: true })
+      const updatedHistory = await fetchHistory()
+      const refreshedSelected = updatedHistory.find((item) => Number(item.id) === Number(selectedSplit.id))
+      if (refreshedSelected) setSelectedSplit(refreshedSelected)
+      const firstWarning = refreshed.syncMessages.find((message) => message.startsWith('Could not reconcile'))
+      setNotice(firstWarning || 'Allocations reloaded. Payment status comes from the Payment API; only verified SUCCESS payments are recorded as paid.')
+    } catch (err) {
+      setError(`Unable to refresh allocation statuses: ${err.message}`)
+    } finally {
+      setDetailsLoading(false)
+    }
+  }
+
+  function updateAllocationContact(allocationId, field, value) {
+    setAllocationContacts((current) => ({
+      ...current,
+      [allocationId]: { ...(current[allocationId] || { email: '', phone: '' }), [field]: value },
+    }))
+  }
+
+  function sharePercent(amount, denominator = totalAmount) {
+    if (Number(denominator) <= 0) return '0.00'
+    return ((Number(amount) / Number(denominator)) * 100).toFixed(2)
+  }
+
+  return (
+    <div className="split-page">
+      <style>{splitPaymentStyles}</style>
+      <section className="welcome split-welcome">
+        <div>
+          <p className="welcome-tag">PAYMENT OPERATIONS</p>
+          <h2>Split Payment</h2>
+          <p>Create a bill, define how it is shared, create the saved allocations and generate a separate SabbPe payment request per allocation.</p>
+        </div>
+        <button className="secondary-button split-refresh-button" type="button" onClick={refreshEverything} disabled={historyLoading}>
+          {historyLoading ? 'Refreshingâ€¦' : 'â†» Refresh history'}
+        </button>
+      </section>
+
+      {error && <div className="api-error split-message" role="alert"><p>{error}</p></div>}
+      {notice && <div className="notice split-message" role="status"><strong>Update</strong><p>{notice}</p></div>}
+
+      <section className="panel split-create-panel">
+        <div className="panel-header">
+          <div>
+            <h2>1. Create a split</h2>
+            <p>Choose Personal or Business, select a sector for business bills, then configure the bill and allocation mode.</p>
+          </div>
+        </div>
+
+        <div className="split-main-grid">
+          <div className="split-field">
+            <label htmlFor="splitScope">Split ownership</label>
+            <select id="splitScope" value={splitScope} onChange={(event) => setSplitScope(event.target.value)} disabled={loading}>
+              <option value="PERSONAL">Personal split</option>
+              <option value="BUSINESS">Business split</option>
+            </select>
+            <small>{splitScope === 'PERSONAL' ? 'Create a personal bill under your own account.' : 'Create a bill for an organization you are authorized to manage.'}</small>
+          </div>
+          {splitScope === 'BUSINESS' && <>
+            <div className="split-field">
+              <label htmlFor="splitOrganizationId">Organization ID</label>
+              <input id="splitOrganizationId" type="text" value={organizationId} onChange={(event) => setOrganizationId(event.target.value)} placeholder="Enter your organization ID" disabled={loading} maxLength={100} />
+              <small>The backend checks your active organization membership and management role before saving.</small>
+            </div>
+            <div className="split-field">
+              <label htmlFor="businessCategory">Business sector (12 options)</label>
+              <select id="businessCategory" value={businessCategoryId} onChange={(event) => setBusinessCategoryId(event.target.value)} disabled={loading || categoriesLoading || businessCategories.length === 0}>
+                <option value="">{categoriesLoading ? 'Loading sectorsâ€¦' : 'Select business sector'}</option>
+                {businessCategories.map((category) => <option key={category.id} value={category.id}>{(categoryIconMap[category.categoryCode] || 'ðŸ“') + ' ' + category.categoryName}</option>)}
+              </select>
+              <small>{categoriesError || selectedBusinessCategory?.description || (categoriesLoading ? 'Loading active sectors from the backend.' : 'Choose the sector that best describes this business.')}</small>
+            </div>
+          </>}
+          <div className="split-field">
+            <label htmlFor="splitType">Split type</label>
+            <select id="splitType" value={splitType} onChange={(event) => setSplitType(event.target.value)} disabled={loading}>
+              <option value="RESTAURANT_BILL">Restaurant group bill</option>
+              <option value="PLATFORM_FEE">Platform fee</option>
+            </select>
+            <small>{splitType === 'RESTAURANT_BILL' ? 'Use for a bill shared among friends or customers.' : 'Use for a platform-fee allocation or settlement breakdown.'}</small>
+          </div>
+          <div className="split-field">
+            <label htmlFor="splitTotal">Total amount (â‚¹ INR)</label>
+            <input id="splitTotal" type="number" min="0.01" step="0.01" value={totalAmount} onChange={(event) => setTotalAmount(event.target.value)} placeholder="e.g. 900.00" disabled={loading} />
+            <small>This is the full bill amount before its allocations.</small>
+          </div>
+          <div className="split-field">
+            <label htmlFor="splitMode">Allocation mode</label>
+            <select id="splitMode" value={paymentMode} onChange={(event) => setPaymentMode(event.target.value)} disabled={loading}>
+              <option value="INDIVIDUAL">Individual shares</option>
+              <option value="ONE_PAYS">One payer</option>
+              <option value="PERCENTAGE">Percentage (merchant + platform)</option>
+            </select>
+            <small>{paymentMode === 'INDIVIDUAL' ? 'Each participant pays their own share.' : paymentMode === 'ONE_PAYS' ? 'One participant pays the full bill; one allocation is created.' : 'The backend automatically creates Merchant and Platform Fee allocations.'}</small>
+          </div>
+        </div>
+
+        {isPercentageMode && (
+          <div className="split-mode-explainer">
+            <div>
+              <h3>Percentage-based allocation</h3>
+              <p>Choose the platform fee percentage. The backend calculates the merchant share as the remainder and creates both allocations automatically.</p>
+            </div>
+            <div className="split-fee-control">
+              <label htmlFor="platformFeePercentage">Platform fee (%)</label>
+              <input id="platformFeePercentage" type="number" min="0.01" max="99.99" step="0.01" value={platformFeePercentage} onChange={(event) => setPlatformFeePercentage(event.target.value)} disabled={loading} />
+            </div>
+            <div className="split-percentage-preview">
+              <div><span>Merchant ({(100 - (Number(platformFeePercentage) || 0)).toFixed(2)}%)</span><strong>{money(merchantCents / 100)}</strong></div>
+              <div><span>Platform Fee ({(Number(platformFeePercentage) || 0).toFixed(2)}%)</span><strong>{money(platformCents / 100)}</strong></div>
+            </div>
+          </div>
+        )}
+
+        {!isPercentageMode && (
+          <div className="split-participants-section">
+            <div className="split-section-heading">
+              <div>
+                <h3>Participants</h3>
+                <p>{paymentMode === 'ONE_PAYS' ? 'Only the selected payer gets an allocation for the full amount.' : 'Add each participant with their own contact details. Shares must add up exactly to the bill total.'}</p>
+              </div>
+                            <div style={{ display: 'flex', gap: 8 }}>
+                <button type="button" className="secondary-button split-small-button" onClick={applyEqualSplit} disabled={loading || !totalAmount} title="Distribute total amount equally among all participants">
+                  âš¡ Equal Split (1-Click)
+                </button>
+                {paymentMode === 'INDIVIDUAL' && (
+                  <button type="button" className="secondary-button split-small-button" onClick={addParticipant} disabled={loading}>
+                    + Add participant
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {visibleParticipants.map((participant, index) => {
+              const amount = paymentMode === 'ONE_PAYS' ? Number(totalAmount) || 0 : Number(participant.allocationAmount) || 0
+              const percent = paymentMode === 'ONE_PAYS' ? '100.00' : sharePercent(amount)
+              return (
+                <div key={index} className="split-participant-card">
+                  <div className="split-participant-title"><strong>Participant {index + 1}</strong><span>{paymentMode === 'ONE_PAYS' ? 'Full-bill payer' : `Share ${percent}%`}</span></div>
+                  <div className="split-participant-grid">
+                    <div className="split-field"><label htmlFor={`participantName-${index}`}>Name</label><input id={`participantName-${index}`} value={participant.participantName} onChange={(event) => updateParticipant(index, 'participantName', event.target.value)} placeholder={`Participant ${index + 1}`} disabled={loading} /></div>
+                    <div className="split-field"><label htmlFor={`participantEmail-${index}`}>Email address</label><input id={`participantEmail-${index}`} type="email" autoComplete="email" value={participant.email} onChange={(event) => updateParticipant(index, 'email', event.target.value)} placeholder="name@example.com" disabled={loading} /></div>
+                    <div className="split-field"><label htmlFor={`participantPhone-${index}`}>Mobile number</label><input id={`participantPhone-${index}`} type="tel" inputMode="tel" autoComplete="tel" value={participant.phone} onChange={(event) => updateParticipant(index, 'phone', event.target.value)} placeholder="10-digit Indian mobile" disabled={loading} /></div>
+                    <div className="split-field"><label htmlFor={`participantType-${index}`}>Participant type</label><select id={`participantType-${index}`} value={participant.participantType} onChange={(event) => updateParticipant(index, 'participantType', event.target.value)} disabled={loading}><option value="FRIEND">Friend</option><option value="MERCHANT">Merchant</option><option value="PLATFORM">Platform</option></select></div>
+                    <div className="split-field"><label htmlFor={`participantAmount-${index}`}>Share amount (â‚¹)</label><input id={`participantAmount-${index}`} type="number" min="0.01" step="0.01" value={paymentMode === 'ONE_PAYS' ? totalAmount : participant.allocationAmount} onChange={(event) => updateParticipant(index, 'allocationAmount', event.target.value)} placeholder="e.g. 300.00" disabled={loading || paymentMode === 'ONE_PAYS'} /></div>
+                    <div className="split-field"><label htmlFor={`participantPercent-${index}`}>Calculated share (%)</label><input id={`participantPercent-${index}`} type="text" value={percent} readOnly aria-readonly="true" /><small>Calculated from share Ã· total bill.</small></div>
+                  </div>
+                  {paymentMode === 'INDIVIDUAL' && visibleParticipants.length > 1 && <div className="split-participant-actions"><button type="button" className="secondary-button split-small-button" onClick={() => removeParticipant(index)} disabled={loading}>Remove participant Ã—</button></div>}
+                </div>
+              )
+            })}
+          </div>
+        )}
+
+        <div className={`split-amount-summary ${amountMatches ? 'is-valid' : 'is-invalid'}`}>
+          <div><span>Total bill</span><strong>{money(totalCents / 100)}</strong></div>
+          <div><span>{isPercentageMode ? 'Allocated by backend' : 'Total allocated'}</span><strong>{money((isPercentageMode ? totalCents : manualAllocatedCents) / 100)}</strong></div>
+          <div><span>Remaining</span><strong>{money(remainingCents / 100)}</strong></div>
+          <p>{isPercentageMode
+            ? (amountMatches ? 'Fee percentage is valid. Merchant and platform allocations will be generated when saved.' : 'Enter a platform fee percentage between 0 and 100.')
+            : (amountMatches ? 'Shares match the total bill.' : 'Adjust participant amounts until allocated equals the total bill.')}</p>
+        </div>
+        <button type="button" className="primary-button split-create-button" disabled={loading || !amountMatches} onClick={createSplit}>
+          {loading ? 'Creating splitâ€¦' : 'Create split and allocations'}
+        </button>
+      </section>
+
+      <section className="panel split-history-panel">
+        <div className="panel-header">
+          <div><h2>2. Split history</h2><p>Select a saved split to inspect its allocations, add contact details and generate payment requests.</p></div>
+          <span className="split-record-count">{history.length} record(s)</span>
+        </div>
+        {historyLoading && history.length === 0 ? <p className="split-empty-state">Loading split historyâ€¦</p> : history.length === 0 ? <p className="split-empty-state">No split records returned. Create a split above or use Refresh history.</p> : (
+          <div className="split-history-table-wrap">
+            <table className="data-table split-history-table">
+              <thead><tr><th>Split ID</th><th>Type</th><th>Total</th><th>Mode</th><th>Status</th><th>Action</th></tr></thead>
+              <tbody>{history.map((item) => (
+                <tr key={item.id} className={Number(selectedSplit?.id) === Number(item.id) ? 'is-selected' : ''}>
+                  <td>#{item.id}</td><td>{item.splitType || 'â€”'}</td><td>{money(item.totalAmount)}</td><td>{item.paymentMode || 'â€”'}</td><td><span className={`split-status ${String(item.status || 'CREATED').toLowerCase()}`}>{item.status || 'CREATED'}</span></td>
+                  <td><button type="button" className="secondary-button split-small-button" onClick={() => openExistingSplit(item)} disabled={detailsLoading}>{detailsLoading && Number(selectedSplit?.id) === Number(item.id) ? 'Loadingâ€¦' : Number(selectedSplit?.id) === Number(item.id) ? 'Selected' : 'View details'}</button></td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      {selectedSplit && (
+        <section id="split-details" className="panel split-details-panel">
+          <div className="panel-header split-details-heading">
+            <div><h2>3. Split #{selectedSplit.id} details</h2><p>{money(selectedSplit.totalAmount)} Â· {selectedSplit.splitType} Â· {selectedSplit.paymentMode}</p></div>
+            <div className="split-detail-actions">
+              <button type="button" className="secondary-button split-small-button" onClick={validateCurrentSplit} disabled={detailsLoading}>Validate allocations</button>
+              <button type="button" className="secondary-button split-small-button" onClick={refreshSelectedSplit} disabled={detailsLoading}>{detailsLoading ? 'Refreshingâ€¦' : 'Refresh statuses'}</button>
+            </div>
+          </div>
+
+          <div className="split-next-steps">
+            <strong>What happens next?</strong>
+            <ol>
+              <li>Confirm the email address and mobile number for each allocation.</li>
+              <li>Choose <b>Generate SabbPe request</b>. The request is created by your existing backend.</li>
+              <li>The returned pending payment is linked to this allocation when the backend returns its payment ID.</li>
+              <li>After SabbPe/payment reconciliation verifies a successful payment, refresh statuses to update the allocation and split status.</li>
+            </ol>
+          </div>
+
+          {validation && <div className={`split-validation-box ${validation.valid ? 'is-valid' : 'is-invalid'}`}><strong>{validation.valid ? 'Allocation amounts validated' : 'Allocation amounts need attention'}</strong><p>Total: {money(validation.totalAmount)} Â· Allocated: {money(validation.allocatedAmount)} Â· Remaining: {money(validation.remainingAmount)}</p><small>{validation.message}</small></div>}
+          {detailsLoading && <p className="split-empty-state">Loading saved allocation statusâ€¦</p>}
+          {!detailsLoading && allocations.length === 0 && <p className="split-empty-state">This split currently has no saved allocations.</p>}
+
+          <div className="split-allocation-table-wrap">
+            <table className="data-table split-allocation-table">
+              <thead>
+                <tr>
+                  <th>Participant / Allocation</th>
+                  <th>Share amount</th>
+                  <th>Paid amount</th>
+                  <th>Payment ID</th>
+                  <th>Payment status</th>
+                  <th>Recipient details</th>
+                  <th>Payment link</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {allocations.map((allocation) => {
+                  const result = paymentLinks[allocation.id]
+                  const contact = allocationContacts[allocation.id] || { email: '', phone: '' }
+                  const checkoutUrl = result?.checkoutUrl || getCheckoutUrl(result)
+                  const contactReady = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test((contact.email || '').trim()) && (() => {
+                    const digits = (contact.phone || '').replace(/\D/g, '')
+                    return digits.length === 10 || (digits.length === 12 && digits.startsWith('91'))
+                  })()
+                  const allocationStatus = String(allocation.status || 'PENDING').toUpperCase()
+                  const verifiedStatus = verifiedGatewayStatuses[allocation.id]
+                  const verifiedForCurrentPayment = Boolean(
+                    verifiedStatus &&
+                    Number(verifiedStatus.paymentId) === Number(allocation.paymentId)
+                  )
+                  const displayedStatus = verifiedForCurrentPayment
+                    ? verifiedStatus.status
+                    : allocationStatus
+                  // A gateway check alone must not mark the saved allocation as paid.
+                  const allocationIsSuccess = allocationStatus === 'SUCCESS'
+                  const canRegenerate = verifiedForCurrentPayment
+                    && ['FAILED', 'CANCELLED', 'TIMEOUT'].includes(verifiedStatus.status)
+                  return (
+                    <tr key={allocation.id} className={`split-allocation-row split-row-${allocationStatus.toLowerCase()}`}>
+                      <td className="split-allocation-person-cell">
+                        <strong>{allocation.participantName || 'Unnamed allocation'}</strong>
+                        <span>Allocation #{allocation.id}</span>
+                        <small>{allocation.participantType || 'Participant'} Â· {sharePercent(allocation.allocationAmount, selectedSplit.totalAmount)}% share</small>
+                      </td>
+                      <td className="split-money-cell"><strong>{money(allocation.allocationAmount)}</strong></td>
+                      <td className="split-money-cell">{money(allocation.paidAmount)}</td>
+                      <td>{allocation.paymentId ? <span className="split-payment-id">#{allocation.paymentId}</span> : <span className="split-muted">Not linked</span>}</td>
+                      <td>
+                        <span className={`split-status ${displayedStatus.toLowerCase()}`}>
+                          {displayedStatus}
+                        </span>
+                        {verifiedForCurrentPayment && (
+                          <small className="split-verified-caption">
+                            Gateway verified Â· Saved allocation: {allocationStatus}
+                          </small>
+                        )}
+                      </td>
+                      <td className="split-recipient-cell">
+                        {!allocationIsSuccess ? (
+                          <div className="split-recipient-fields">
+                            <label>
+                              <span>Email</span>
+                              <input type="email" value={contact.email || ''} onChange={(event) => updateAllocationContact(allocation.id, 'email', event.target.value)} placeholder="name@example.com" aria-label={`Recipient email for allocation ${allocation.id}`} />
+                            </label>
+                            <label>
+                              <span>Mobile</span>
+                              <input type="tel" inputMode="tel" value={contact.phone || ''} onChange={(event) => updateAllocationContact(allocation.id, 'phone', event.target.value)} placeholder="10-digit mobile" aria-label={`Recipient mobile for allocation ${allocation.id}`} />
+                            </label>
+                            {!contactReady && <small className="split-field-hint">Enter a valid email and mobile to create a request.</small>}
+                          </div>
+                        ) : <span className="split-muted">No action needed</span>}
+                      </td>
+                      <td className="split-link-cell">
+                        {result ? (
+                          <div className="split-link-summary">
+                            <strong>{result.paymentId ? `Request #${result.paymentId}` : 'Gateway response'}</strong>
+                            <span>{result.paymentStatus || result.status || (result.paymentId ? 'PENDING' : 'Response received')}</span>
+                            {result.pblOrderRef && <small>Ref: {result.pblOrderRef}</small>}
+                            {(result.emailDeliveryStatus || result.emailStatus || result.link_status || result.linkStatus) && <small>Delivery: {result.emailDeliveryStatus || result.emailStatus || result.link_status || result.linkStatus}</small>}
+                            {result.linkError && <small className="split-inline-error">Linking error: {result.linkError}</small>}
+                            {checkoutUrl && <a className="split-checkout-link" href={checkoutUrl} target="_blank" rel="noopener noreferrer">Open checkout â†—</a>}
+                          </div>
+                        ) : <span className="split-muted">{allocation.paymentId ? 'Existing request' : 'No link generated'}</span>}
+                      </td>
+                      <td className="split-actions-cell">
+                        <div className="split-row-actions">
+                          {allocationIsSuccess ? (
+                            <span className="split-action-complete">âœ“ Completed</span>
+                          ) : allocation.paymentId ? (
+                            <>
+                              <button type="button" className="secondary-button split-small-button" onClick={() => checkAllocationStatus(allocation)} disabled={linkLoadingId === allocation.id}>
+                                {linkLoadingId === allocation.id ? 'Checkingâ€¦' : 'Check status'}
+                              </button>
+                              {canRegenerate && (
+                                <button type="button" className="primary-button split-small-button split-regenerate-button" onClick={() => generateLink(allocation, { regenerate: true })} disabled={linkLoadingId === allocation.id || !contactReady} title={!contactReady ? 'Enter a valid recipient email and mobile first' : 'Create a replacement only after verified terminal failure'}>
+                                  {linkLoadingId === allocation.id ? 'Creatingâ€¦' : 'Regenerate link'}
+                                </button>
+                              )}
+                              <small className="split-action-hint">
+                                {verifiedForCurrentPayment && verifiedStatus.status === 'PENDING'
+                                  ? 'Payment is still pending. Keep the existing link.'
+                                  : canRegenerate
+                                    ? 'Gateway failure verified. A replacement is available.'
+                                    : 'Regeneration appears only after a verified FAILED, CANCELLED or TIMEOUT status.'}
+                              </small>
+                            </>
+                          ) : result?.paymentId ? (
+                            <button type="button" className="secondary-button split-small-button" onClick={() => retryPaymentLinking(allocation)} disabled={linkLoadingId === allocation.id}>
+                              {linkLoadingId === allocation.id ? 'Linkingâ€¦' : 'Retry linking'}
+                            </button>
+                          ) : (
+                            <>
+                              <button type="button" className="primary-button split-small-button" onClick={() => generateLink(allocation)} disabled={linkLoadingId === allocation.id || !contactReady} title={!contactReady ? 'Enter a valid recipient email and mobile first' : 'Generate a payment request'}>
+                                {linkLoadingId === allocation.id ? 'Creatingâ€¦' : 'Generate link'}
+                              </button>
+                              {String(allocation.status).toUpperCase() !== 'SUCCESS' && (
+                                <button type="button" className="secondary-button split-small-button" style={{ marginLeft: 4, background: '#e0e7ff', color: '#3730a3', border: '1px solid #c7d2fe' }} onClick={() => generateGatewayAllocationQr(allocation)} disabled={linkLoadingId === allocation.id} title="Generate SabbPe Gateway payment QR code for this share">
+                                  {linkLoadingId === allocation.id ? 'Generating...' : 'Gateway QR'}
+                                </button>
+                              )}
+                            </>
+                          )}
+
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
+                {allocations.length === 0 && <tr><td colSpan="8" className="split-table-empty">No allocations are available for this split.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+          <p className="split-contact-note">Recipient emails and mobile numbers are currently kept in this browser session; the allocation entity does not store them. For older splits, enter contacts above before generating a link. Refresh only updates payment status when the backend exposes the linked payment and confirms its status.</p>
+                    {allocationQrModal && (
+            <div style={{ marginTop: 24, padding: 20, background: '#f8fafc', border: '1px solid #cbd5e1', borderRadius: 12, textAlign: 'center' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                <h3 style={{ margin: 0, color: '#1e293b' }}>
+                  Gateway QR â€” {allocationQrModal.participantName} (â‚¹{Number(allocationQrModal.amount).toFixed(2)})
+                </h3>
+                <button type="button" className="secondary-button split-small-button" onClick={() => setAllocationQrModal(null)}>Close QR</button>
+              </div>
+              <p style={{ color: '#64748b', fontSize: 13, marginBottom: 16 }}>
+                Customer can scan with UPI/cards to pay their specific split share on the SabbPe hosted page.
+              </p>
+              <div style={{ display: 'inline-block', background: '#fff', padding: 14, borderRadius: 10, boxShadow: '0 4px 12px rgba(0,0,0,0.06)' }}>
+                <QRCodeSVG value={allocationQrModal.paymentUrl} size={200} includeMargin={true} level="H" />
+              </div>
+              <div style={{ marginTop: 14, display: 'flex', gap: 8, justifyContent: 'center' }}>
+                <button type="button" className="secondary-button split-small-button" onClick={() => {
+                  navigator.clipboard.writeText(allocationQrModal.paymentUrl);
+                  alert('Payment URL copied to clipboard!');
+                }}>
+                  Copy Payment URL
+                </button>
+                <a href={allocationQrModal.paymentUrl} target="_blank" rel="noopener noreferrer" className="primary-button split-small-button" style={{ textDecoration: 'none' }}>
+                  Open Checkout Page
+                </a>
+              </div>
+            </div>
+          )}
+          <SplitQrSessions split={selectedSplit} apiCall={apiCall} />
+        </section>
+      )}
+    </div>
+  )
+}
+
+
+function SplitQrSessions({ split, apiCall }) {
+  const [sessions, setSessions] = useState([])
+  const [activeQr, setActiveQr] = useState(null)
+  const [branchId, setBranchId] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [message, setMessage] = useState('')
+  const [error, setError] = useState('')
+
+  async function loadSessions() {
+    if (!split?.id) return
+    try {
+      const data = await apiCall(`/split-sessions/split/${split.id}`)
+      setSessions(Array.isArray(data) ? data : (data?.sessions || []))
+    } catch (e) { setError(e.message || 'Could not load QR sessions.') }
+  }
+  useEffect(() => { setActiveQr(null); setError(''); setMessage(''); loadSessions() }, [split?.id])
+
+  function localExpiry(hours = 24) {
+    const date = new Date(Date.now() + hours * 60 * 60 * 1000)
+    return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 19)
+  }
+  async function createSession() {
+    setBusy(true); setError(''); setMessage('')
+    try {
+      const data = await apiCall('/split-sessions', { method: 'POST', body: JSON.stringify({
+        splitId: Number(split.id), branchId: branchId.trim() ? Number(branchId) : null,
+        joinPolicy: 'PUBLIC', maxParticipants: 20, expiresAt: localExpiry(24),
+      }) })
+      setActiveQr(data); setMessage('QR session created. Share this QR code with guests.'); await loadSessions()
+    } catch (e) { setError(e.message || 'Could not create QR session.') }
+    finally { setBusy(false) }
+  }
+  async function regenerate(sessionId) {
+    setBusy(true); setError(''); setMessage('')
+    try { const data = await apiCall(`/split-sessions/${sessionId}/regenerate`, { method: 'POST' }); setActiveQr(data); setMessage('A new QR code was generated. The previous QR code is now invalid.'); await loadSessions() }
+    catch (e) { setError(e.message || 'Could not regenerate QR code.') }
+    finally { setBusy(false) }
+  }
+  async function closeSession(sessionId) {
+    if (!window.confirm('Close this QR session? Existing participants and payment records will remain unchanged.')) return
+    setBusy(true); setError(''); setMessage('')
+    try { await apiCall(`/split-sessions/${sessionId}/close`, { method: 'POST' }); setActiveQr(null); setMessage('QR session closed.'); await loadSessions() }
+    catch (e) { setError(e.message || 'Could not close QR session.') }
+    finally { setBusy(false) }
+  }
+  const guestUrl = activeQr?.qrToken ? `${window.location.origin}/join?token=${encodeURIComponent(activeQr.qrToken)}` : ''
+  return <section className="panel" style={{ marginTop: 18 }}>
+    <div className="panel-header"><div><h3>Guest QR joining</h3><p>Guests can join this split using an OTP. Joining does not create a payment or allocation.</p></div></div>
+    <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'end' }}>
+      <label style={{ display: 'grid', gap: 5, fontSize: 12 }}>Branch ID (only for branch-scoped splits)<input value={branchId} onChange={e => setBranchId(e.target.value)} placeholder="Leave blank or enter BR-001" inputMode="numeric" style={{ padding: 10, border: '1px solid #d8e2f1', borderRadius: 8 }} /></label>
+      <button type="button" className="primary-button split-small-button" onClick={createSession} disabled={busy || Boolean(sessions.some(s => String(s.sessionStatus).toUpperCase() === 'ACTIVE'))}>{busy ? 'Please waitâ€¦' : 'Create guest QR'}</button>
+      <button type="button" className="secondary-button split-small-button" onClick={loadSessions} disabled={busy}>Refresh sessions</button>
+    </div>
+    {error && <p role="alert" style={{ color: '#b42318', marginTop: 12 }}>{error}</p>}
+    {message && <p role="status" style={{ color: '#168352', marginTop: 12 }}>{message}</p>}
+    {activeQr?.qrToken && <div style={{ display: 'flex', gap: 20, alignItems: 'center', flexWrap: 'wrap', marginTop: 16, padding: 16, border: '1px solid #dce6f6', borderRadius: 12 }}>
+      <QRCodeSVG value={guestUrl} size={190} level="M" includeMargin />
+      <div style={{ minWidth: 220, flex: 1 }}><strong>QR code ready</strong><p style={{ fontSize: 12, color: '#64748b' }}>Expires: {activeQr.expiresAt || 'As configured'} Â· Session: {activeQr.sessionCode || activeQr.sessionId}</p><p style={{ fontSize: 12, color: '#64748b' }}>The QR token is shown only in this browser session. Save or share the QR now; it cannot be retrieved later.</p><button type="button" className="secondary-button split-small-button" onClick={() => navigator.clipboard.writeText(guestUrl)}>Copy guest link</button></div>
+    </div>}
+    <div style={{ marginTop: 16 }}><strong style={{ fontSize: 13 }}>Existing sessions</strong>
+      {sessions.length === 0 ? <p className="split-contact-note">No QR sessions found for this split.</p> : <div className="table-wrap" style={{ marginTop: 8, overflowX: 'auto' }}><table className="data-table"><thead><tr><th>Session</th><th>Status</th><th>Expires</th><th>Actions</th></tr></thead><tbody>{sessions.map(s => <tr key={s.sessionId}><td>{s.sessionCode || `#${s.sessionId}`}</td><td>{s.sessionStatus}</td><td>{s.expiresAt || 'â€”'}</td><td style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>{String(s.sessionStatus).toUpperCase() === 'ACTIVE' && <><button type="button" className="secondary-button split-small-button" disabled={busy} onClick={() => regenerate(s.sessionId)}>Regenerate QR</button><button type="button" className="secondary-button split-small-button" disabled={busy} onClick={() => closeSession(s.sessionId)}>Close</button></>}</td></tr>)}</tbody></table></div>}
+    </div>
+  </section>
+}
