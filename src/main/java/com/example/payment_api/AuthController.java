@@ -48,4 +48,20 @@ public class AuthController {
                 )
         );
     }
+
+    // CHANGE PASSWORD
+    // POST /api/auth/change-password
+    @PostMapping("/change-password")
+    public ResponseEntity<Map<String, String>> changePassword(
+            @Valid @RequestBody ChangePasswordRequest request) {
+
+        authService.changePassword(request);
+
+        return ResponseEntity.ok(
+                Map.of(
+                        "message",
+                        "Password changed successfully"
+                )
+        );
+    }
 }
