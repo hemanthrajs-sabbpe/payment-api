@@ -5,6 +5,8 @@ import {
   createSabbPeGatewayPayment,
   createSabbPePayment,
   initiateEasebuzzPayment,
+  regenerateEasebuzzPayment,
+  getPaymentById,
   getSabbPeGatewayPaymentStatus
 } from '../api'
 import {
@@ -22,7 +24,7 @@ import {
 
 export default function CreatePaymentPage() {
   const navigate = useNavigate()
-  const [method, setMethod] = useState('gateway_qr')
+  const [method, setMethod] = useState('pbl')
   const [customerName, setCustomerName] = useState('')
   const [email, setEmail] = useState('')
   const [phone, setPhone] = useState('')
@@ -33,6 +35,7 @@ export default function CreatePaymentPage() {
   const [resultData, setResultData] = useState(null)
   const [copied, setCopied] = useState(false)
   const [statusLoading, setStatusLoading] = useState(false)
+  const [regenerating, setRegenerating] = useState(false)
 
   const defaultDeeplink = `upi://mandate?amrule=MAX&tn=SABBPE%20Mandate&validityend=13102027&mode=04&mn=SABBPE%20Mandate&cu=INR&pn=SABBPE&purpose=14&fam=1.00&tid=FJJ11b9417b3f6341a4952b7b3001907ab9&pa=sabbpeuat@fblpay&am=${amount || '10.00'}&validitystart=14102026&recur=ASPRESENTED&tr=FGPd268ace036ae40dfb214c5b34a87f8c7&mc=7322&txnType=CREATE&orgid=000000&rev=N`
 
@@ -71,7 +74,8 @@ export default function CreatePaymentPage() {
           paymentId: res.paymentId,
           merchantOrderRef: res.merchantOrderRef,
           status: res.status || 'PENDING',
-          amount: res.amount
+          amount: res.amount,
+          emailDispatchStatus: res.emailDispatchStatus
         })
       } else if (method === 'upi_mandate') {
         const link = defaultDeeplink
@@ -131,11 +135,22 @@ export default function CreatePaymentPage() {
           productinfo: trimmedDescription || 'Easebuzz Payment',
         })
 
-        if (res?.checkoutUrl && typeof res.checkoutUrl === 'string') {
-          window.location.assign(res.checkoutUrl)
-          return
-        }
-        throw new Error('Easebuzz did not return a valid checkout URL.')
+        if (!res?.checkoutUrl) throw new Error('Easebuzz did not return a valid checkout URL.')
+
+        setResultData({
+          type: 'qr',
+          title: 'Easebuzz Dynamic Checkout QR',
+          qrValue: res.checkoutUrl,
+          paymentUrl: res.checkoutUrl,
+          paymentId: res.paymentId,
+          merchantOrderRef: res.transactionId,
+          status: res.status || 'PENDING',
+          amount: paymentAmount,
+          emailDispatchStatus: res.emailDispatchStatus || 'NOT_REQUESTED',
+          note: res.emailDispatchStatus === 'QUEUED'
+            ? `Live Easebuzz checkout generated. Invoice delivery queued for ${trimmedEmail} via SMTP relay.`
+            : 'Live Easebuzz checkout generated. Scan QR or click Open Checkout to pay.'
+        })
       }
     } catch (error) {
       console.error('Payment initiation failed:', error)
@@ -168,7 +183,8 @@ export default function CreatePaymentPage() {
     if (!resultData?.paymentId) return
     setStatusLoading(true)
     try {
-      const res = await getSabbPeGatewayPaymentStatus(resultData.paymentId)
+      // Use general getPaymentById to accurately fetch status for any provider (Easebuzz, SabbPe, etc.)
+      const res = await getPaymentById(resultData.paymentId)
       if (res?.status) {
         setResultData((prev) => ({ ...prev, status: res.status }))
       }
@@ -176,6 +192,46 @@ export default function CreatePaymentPage() {
       alert('Could not fetch status: ' + err.message)
     } finally {
       setStatusLoading(false)
+    }
+  }
+
+  const handleRegenerate = async () => {
+    if (!resultData?.paymentId) return
+    setRegenerating(true)
+    setMessage('')
+    try {
+      const trimmedName = customerName.trim()
+      const trimmedEmail = email.trim()
+      const trimmedPhone = phone.trim()
+      const paymentAmount = Number(amount)
+
+      const res = await regenerateEasebuzzPayment(resultData.paymentId, {
+        firstname: trimmedName || 'Customer',
+        email: trimmedEmail,
+        phone: trimmedPhone,
+        amount: paymentAmount,
+        productinfo: description.trim() || 'Easebuzz Payment',
+      })
+
+      if (!res?.checkoutUrl) throw new Error('Regeneration did not return a valid checkout URL.')
+
+      setResultData({
+        type: 'qr',
+        title: 'Easebuzz Dynamic Checkout QR (Replacement)',
+        qrValue: res.checkoutUrl,
+        paymentUrl: res.checkoutUrl,
+        paymentId: res.paymentId,
+        merchantOrderRef: res.transactionId,
+        status: res.status || 'PENDING',
+        amount: paymentAmount,
+        emailDispatchStatus: res.emailDispatchStatus || 'NOT_REQUESTED',
+        note: `Fresh checkout session #${res.paymentId} generated after verified previous attempt failure.`
+      })
+      setMessage(`Fresh checkout session created successfully (#${res.paymentId}).`)
+    } catch (err) {
+      setMessage(err.message || 'Payment regeneration failed.')
+    } finally {
+      setRegenerating(false)
     }
   }
 
@@ -206,15 +262,6 @@ export default function CreatePaymentPage() {
               <Link2 size={24} className="method-tile-icon" style={{ color: '#2563eb' }} />
               <strong>SabbPe PBL</strong>
               <small>Payment Link</small>
-            </div>
-
-            <div
-              className={`method-tile ${method === 'gateway_qr' ? 'method-selected' : ''}`}
-              onClick={() => { setMethod('gateway_qr'); setResultData(null) }}
-            >
-              <QrCode size={24} className="method-tile-icon" />
-              <strong>Hosted QR</strong>
-              <small>Web Checkout QR</small>
             </div>
 
             <div
@@ -305,8 +352,6 @@ export default function CreatePaymentPage() {
 
             <button type="submit" disabled={loading} className="btn-primary btn-block">
               {loading ? 'Processing via SabbPe...' : (
-                method === 'gateway_qr' ? 'Generate SabbPe Dynamic QR' :
-                method === 'upi_mandate' ? 'Generate UPI Mandate QR' :
                 method === 'pbl' ? 'Generate Pay by Link' :
                 'Proceed to Easebuzz Checkout'
               )}
@@ -370,6 +415,14 @@ export default function CreatePaymentPage() {
                     </span>
                   </div>
                 )}
+                {resultData.emailDispatchStatus && (
+                  <div className="qr-meta-row">
+                    <span>Email Dispatch:</span>
+                    <span className={`badge ${resultData.emailDispatchStatus === 'SMTP_ACCEPTED' ? 'status-success' : 'status-pending'}`}>
+                      {resultData.emailDispatchStatus}
+                    </span>
+                  </div>
+                )}
               </div>
 
               <div className="action-buttons-wrap">
@@ -413,6 +466,19 @@ export default function CreatePaymentPage() {
                     <span>View Receipt</span>
                   </button>
                 )}
+
+                {resultData.paymentId && method === 'easebuzz' && (resultData.status === 'FAILED' || resultData.status === 'TIMEOUT' || resultData.status === 'CANCELLED') && (
+                  <button
+                    type="button"
+                    className="btn-danger"
+                    disabled={regenerating}
+                    onClick={handleRegenerate}
+                    style={{ backgroundColor: '#ef4444', color: '#ffffff', borderColor: '#dc2626' }}
+                  >
+                    <RefreshCw size={16} className={regenerating ? 'spin' : ''} />
+                    <span>{regenerating ? 'Regenerating...' : 'Regenerate Checkout'}</span>
+                  </button>
+                )}
               </div>
 
               {resultData.note && <p className="qr-note-text">{resultData.note}</p>}
@@ -423,9 +489,7 @@ export default function CreatePaymentPage() {
                 <div className="preview-item">
                   <span>Selected Channel</span>
                   <strong>
-                    {method === 'gateway_qr' ? 'SabbPe Dynamic QR' :
-                     method === 'upi_mandate' ? 'UPI Mandate' :
-                     method === 'pbl' ? 'Pay by Link' : 'Easebuzz Checkout'}
+                    {method === 'pbl' ? 'Pay by Link' : 'Easebuzz Checkout'}
                   </strong>
                 </div>
                 <div className="preview-item">

@@ -202,7 +202,7 @@ export default function Dashboard() {
             <button className="action-tile" onClick={() => navigate('/qr-payments')}>
               <div className="action-tile-icon icon-green"><QrCode size={20} /></div>
               <div className="action-tile-info">
-                <strong>Dynamic QR Payment</strong>
+                <strong>QR Payments</strong>
                 <small>Scan-and-pay with UPI</small>
               </div>
               <ArrowRight size={16} className="action-tile-arrow" />
