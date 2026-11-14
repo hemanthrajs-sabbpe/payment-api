@@ -103,10 +103,14 @@ export default function CreatePaymentPage() {
 
         const pUrl = res?.checkoutUrl || res?.paymentUrl || res?.url || res?.link
         const linkStat = res?.linkStatus || 'PENDING'
-        const deliveryMsg = linkStat === 'DELIVERY_FAILED'
-          ? 'Notification delivery failed at upstream provider. Status remains PENDING.'
+        const emStatus = res?.emailDeliveryStatus || res?.delivery?.email?.status
+        const emDetail = res?.emailDeliveryDetail || res?.delivery?.email?.detail
+        const deliveryMsg = emStatus === 'SENT'
+          ? `Payment link delivered to ${trimmedEmail} via Email.`
+          : emStatus === 'FAILED'
+          ? `Email delivery failed: ${emDetail || 'Gateway dispatch failed'}.`
           : linkStat === 'SENT'
-          ? 'Notification dispatched via Email / WhatsApp.'
+          ? `Dispatched via native gateway to ${trimmedEmail}.`
           : `Link delivery status: ${linkStat}.`
 
         setResultData({
@@ -118,8 +122,10 @@ export default function CreatePaymentPage() {
           merchantOrderRef: res?.merchantOrderRef,
           pblOrderRef: res?.pblOrderRef,
           amount: paymentAmount,
+          customerEmail: trimmedEmail,
           status: res?.paymentStatus || 'PENDING',
           linkStatus: linkStat,
+          emailDeliveryStatus: emStatus || 'Status unavailable',
           note: `Payment link created (${res?.pblOrderRef || 'Ref'}). ${deliveryMsg}`
         })
       } else if (method === 'easebuzz') {

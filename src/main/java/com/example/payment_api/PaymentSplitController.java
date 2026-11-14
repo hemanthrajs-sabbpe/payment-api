@@ -422,14 +422,18 @@ public class PaymentSplitController {
                     result.put("status", "EXISTING_PAYMENT");
                 }
 
+                // Explicitly expose individual participant delivery fields at the top level of the item result
+                result.put("paymentId", paymentResult.get("paymentId"));
+                result.put("email", participant.getEmail().trim());
+                result.put("phone", participant.getPhone().trim());
+                result.put("pblOrderRef", paymentResult.get("pblOrderRef"));
+                result.put("linkStatus", paymentResult.get("linkStatus"));
+                result.put("emailDeliveryStatus", paymentResult.get("emailDeliveryStatus"));
+                result.put("emailDeliveryDetail", paymentResult.get("emailDeliveryDetail"));
+                result.put("paymentStatus", paymentResult.get("paymentStatus"));
+
                 if (paymentResult.get("paymentUrl") != null) {
                     result.put("paymentUrl", paymentResult.get("paymentUrl"));
-                }
-                if (paymentResult.get("pblOrderRef") != null) {
-                    result.put("pblOrderRef", paymentResult.get("pblOrderRef"));
-                }
-                if (paymentResult.get("paymentId") != null) {
-                    result.put("paymentId", paymentResult.get("paymentId"));
                 }
                 if (paymentResult.get("localEmailDelivery") != null) {
                     result.put("localEmailDelivery", paymentResult.get("localEmailDelivery"));

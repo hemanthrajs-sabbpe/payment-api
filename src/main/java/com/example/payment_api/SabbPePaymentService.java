@@ -475,6 +475,14 @@ public class SabbPePaymentService {
                     request.getAmount());
 
             apiResponse.put(
+                    "customerEmail",
+                    request.getEmail().trim());
+
+            apiResponse.put(
+                    "customerPhone",
+                    request.getPhone().trim());
+
+            apiResponse.put(
                     "paymentStatus",
                     "PENDING");
 
@@ -490,9 +498,35 @@ public class SabbPePaymentService {
                     "linkStatus",
                     result.linkStatus());
 
-            apiResponse.put(
-                    "delivery",
-                    result.delivery());
+            Map<String, Object> deliveryMap = result.delivery();
+            apiResponse.put("delivery", deliveryMap);
+
+            String emailStatus = null;
+            String emailDetail = null;
+            String whatsappStatus = null;
+            String whatsappDetail = null;
+
+            if (deliveryMap != null) {
+                Object emailObj = deliveryMap.get("email");
+                if (emailObj instanceof Map<?, ?> em) {
+                    Object st = em.get("status");
+                    Object dt = em.get("detail");
+                    emailStatus = st != null ? String.valueOf(st) : null;
+                    emailDetail = dt != null ? String.valueOf(dt) : null;
+                }
+                Object waObj = deliveryMap.get("whatsapp");
+                if (waObj instanceof Map<?, ?> wa) {
+                    Object wst = wa.get("status");
+                    Object wdt = wa.get("detail");
+                    whatsappStatus = wst != null ? String.valueOf(wst) : null;
+                    whatsappDetail = wdt != null ? String.valueOf(wdt) : null;
+                }
+            }
+
+            apiResponse.put("emailDeliveryStatus", emailStatus);
+            apiResponse.put("emailDeliveryDetail", emailDetail);
+            apiResponse.put("whatsappDeliveryStatus", whatsappStatus);
+            apiResponse.put("whatsappDeliveryDetail", whatsappDetail);
 
             apiResponse.put(
                     "message",
