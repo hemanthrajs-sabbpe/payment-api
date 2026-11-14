@@ -62,6 +62,14 @@ export function initiateEasebuzzPayment(paymentDetails) {
   })
 }
 
+// Regenerate an Easebuzz payment checkout link (only permitted after verified failure)
+export function regenerateEasebuzzPayment(paymentId, paymentDetails) {
+  return apiRequest(`/payments/easebuzz/regenerate/${encodeURIComponent(paymentId)}`, {
+    method: 'POST',
+    body: JSON.stringify(paymentDetails),
+  })
+}
+
 // Generate genuine Easebuzz hosted checkout link for a split participant allocation
 export function createEasebuzzAllocationPayment(splitId, allocationId, contact = {}) {
   return apiRequest(`/payment-splits/${encodeURIComponent(splitId)}/allocations/${encodeURIComponent(allocationId)}/easebuzz/pay`, {
@@ -96,6 +104,30 @@ export function createSabbPePayment(paymentDetails) {
   return apiRequest('/sabbpe/payments', {
     method: 'POST',
     body: JSON.stringify(paymentDetails),
+  })
+}
+
+// Explicit regenerate endpoint for standalone or split-allocation PBL
+export function regenerateSabbPePayment(paymentDetails) {
+  return apiRequest('/sabbpe/payments/regenerate', {
+    method: 'POST',
+    body: JSON.stringify(paymentDetails),
+  })
+}
+
+// Generate SabbPe native Pay By Link for an individual split participant allocation
+export function createSplitParticipantSabbPePbl(splitId, allocationId, contact = {}) {
+  return apiRequest(`/sabbpe/paybylink/splits/${encodeURIComponent(splitId)}/allocations/${encodeURIComponent(allocationId)}/payments`, {
+    method: 'POST',
+    body: JSON.stringify(contact),
+  })
+}
+
+// Generate SabbPe native Pay By Link in bulk for participants in a split
+export function createBulkSplitSabbPePbl(splitId, participants = []) {
+  return apiRequest(`/sabbpe/paybylink/splits/${encodeURIComponent(splitId)}/payment-links`, {
+    method: 'POST',
+    body: JSON.stringify({ participants }),
   })
 }
 
@@ -328,6 +360,33 @@ export function getSimulatorQrDetails(token) {
 // Public customer endpoint to submit simulated outcome (SUCCESS or FAILURE)
 export function processSimulatorOutcome(payload) {
   return publicApiRequest('/simulator/qr/process', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+// ==========================================
+// RANDOM PAYMENT SIMULATOR APIs
+// ==========================================
+
+// Authenticated merchant endpoint to initiate random simulator QR
+export function createRandomSimulatorQr(payload) {
+  return apiRequest('/simulator/random/qr', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+// Public customer endpoint to fetch random simulator details
+export function getRandomSimulatorDetails(token) {
+  return publicApiRequest(`/simulator/random/details?token=${encodeURIComponent(token)}`, {
+    method: 'GET',
+  })
+}
+
+// Public customer endpoint to submit random simulation outcome
+export function processRandomSimulatorOutcome(payload) {
+  return publicApiRequest('/simulator/random/process', {
     method: 'POST',
     body: JSON.stringify(payload),
   })

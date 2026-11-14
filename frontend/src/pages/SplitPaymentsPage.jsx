@@ -6,7 +6,9 @@ import {
   createSabbPePayment,
   generateSplitPaymentLinks,
   createEasebuzzAllocationPayment,
-  createSimulatorAllocationQr
+  createSimulatorAllocationQr,
+  createSplitParticipantSabbPePbl,
+  createBulkSplitSabbPePbl
 } from '../api'
 
 const API_BASE_URL = (typeof window !== 'undefined' && window.location.hostname && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1')
@@ -76,13 +78,16 @@ export default function SplitPaymentsPage() {
   const [allocations, setAllocations] = useState([])
   const [allocationContacts, setAllocationContacts] = useState({})
   const [paymentLinks, setPaymentLinks] = useState({})
+  const [sabbpePblState, setSabbpePblState] = useState({})
   const [activeQrModal, setActiveQrModal] = useState(null)
   const [activePblModal, setActivePblModal] = useState(null)
   const [contactPromptModal, setContactPromptModal] = useState(null)
+  const [bulkPblPromptModal, setBulkPblPromptModal] = useState(null)
   const [copiedPbl, setCopiedPbl] = useState(false)
   const [loading, setLoading] = useState(false)
   const [historyLoading, setHistoryLoading] = useState(false)
   const [linkLoadingId, setLinkLoadingId] = useState(null)
+  const [bulkLoading, setBulkLoading] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
 
@@ -386,6 +391,7 @@ export default function SplitPaymentsPage() {
       const emailStatus = itemResult.emailDispatchStatus || 'NOT_REQUESTED'
 
       setActivePblModal({
+        gatewayProvider: 'EASEBUZZ',
         allocationId: allocation.id,
         participantName: allocation.participantName,
         recipientEmail: trimmedEmail,
@@ -407,6 +413,237 @@ export default function SplitPaymentsPage() {
     } finally {
       setLinkLoadingId(null)
       setContactPromptModal(null)
+    }
+  }
+
+  // Prompt or generate SabbPe Native Pay By Link for an allocation
+  async function handleGenerateSabbPePbl(allocation) {
+    setError('')
+    const contact = allocationContacts[allocation.id]
+
+    // Pre-fill prompt modal with participant contact details
+    setContactPromptModal({
+      type: 'SABBPE_PBL',
+      allocation,
+      participantName: allocation.participantName,
+      email: contact?.email || '',
+      phone: contact?.phone || ''
+    })
+  }
+
+  // Execute SabbPe Native Pay By Link generation
+  async function executeGenerateSabbPePbl(allocation, email, phone) {
+    setLinkLoadingId(allocation.id)
+    setError('')
+    try {
+      const trimmedEmail = (email || '').trim()
+      const trimmedPhone = (phone || '').trim()
+
+      if (!trimmedEmail || !/^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/.test(trimmedEmail)) {
+        throw new Error('A valid email address is required for SabbPe Pay By Link.')
+      }
+      if (!trimmedPhone || !/^\+?[0-9]{10,15}$/.test(trimmedPhone)) {
+        throw new Error('A valid 10-15 digit mobile number is required for SabbPe Pay By Link.')
+      }
+
+      setAllocationContacts(prev => ({
+        ...prev,
+        [allocation.id]: { email: trimmedEmail, phone: trimmedPhone }
+      }))
+
+      const result = await createSplitParticipantSabbPePbl(
+        selectedSplit.id,
+        allocation.id,
+        { email: trimmedEmail, phone: trimmedPhone }
+      )
+
+      if (!result) {
+        throw new Error('Invalid response from SabbPe Pay By Link endpoint.')
+      }
+
+      const pUrl = result.checkoutUrl || result.paymentUrl || result.url || result.link || ''
+      const pId = result.paymentId || result.id || null
+      const pblRef = result.pblOrderRef || ''
+      const pStatus = result.paymentStatus || 'PENDING'
+      const lStatus = result.linkStatus || 'PENDING'
+      const eDelivery = result.emailDeliveryStatus || (result.delivery?.email?.status) || null
+      const eDetail = result.emailDeliveryDetail || (result.delivery?.email?.detail) || ''
+
+      // Save into SabbPe PBL tracking state
+      setSabbpePblState(prev => ({
+        ...prev,
+        [allocation.id]: {
+          paymentId: pId,
+          pblOrderRef: pblRef,
+          customerEmail: trimmedEmail,
+          emailDeliveryStatus: eDelivery,
+          emailDeliveryDetail: eDetail,
+          linkStatus: lStatus,
+          paymentStatus: pStatus,
+          paymentUrl: pUrl,
+        }
+      }))
+
+      setActivePblModal({
+        gatewayProvider: 'SABBPE',
+        allocationId: allocation.id,
+        participantName: allocation.participantName,
+        recipientEmail: trimmedEmail,
+        amount: allocation.allocationAmount,
+        paymentId: pId,
+        pblOrderRef: pblRef,
+        merchantOrderRef: result.merchantOrderRef || '',
+        paymentUrl: pUrl,
+        paymentStatus: pStatus,
+        linkStatus: lStatus,
+        emailDeliveryStatus: eDelivery,
+        emailDeliveryDetail: eDetail,
+        statusText: result.message || 'SabbPe Pay By Link generated and dispatched via native channels.'
+      })
+
+      const deliveryNote = eDelivery === 'SENT'
+        ? ` (Delivered to ${trimmedEmail} via native email)`
+        : eDelivery === 'FAILED'
+        ? ` (Email delivery failed: ${eDetail || 'Gateway dispatch failed'})`
+        : ` (Link Status: ${lStatus})`
+
+      setNotice(`SabbPe Pay By Link generated for ${allocation.participantName}!${deliveryNote}`)
+
+      const refreshed = await apiCall(`/payment-splits/${selectedSplit.id}/allocations`)
+      setAllocations(Array.isArray(refreshed) ? refreshed : [])
+    } catch (err) {
+      setError(err.message || 'Failed to generate SabbPe Pay By Link.')
+    } finally {
+      setLinkLoadingId(null)
+      setContactPromptModal(null)
+    }
+  }
+
+  // Open Bulk SabbPe PBL Review Modal
+  function handleOpenBulkSabbPePblModal() {
+    if (!selectedSplit || !allocations || allocations.length === 0) return
+
+    // Pre-populate candidate participants list for review
+    const candidateList = allocations.map(a => {
+      const contact = allocationContacts[a.id] || {}
+      return {
+        allocationId: a.id,
+        participantName: a.participantName,
+        allocationAmount: a.allocationAmount,
+        status: a.status,
+        email: contact.email || '',
+        phone: contact.phone || ''
+      }
+    })
+
+    setBulkPblPromptModal(candidateList)
+  }
+
+  // Execute Bulk SabbPe PBL Generation
+  async function executeBulkSabbPePbl(candidates) {
+    if (!selectedSplit || !candidates || candidates.length === 0) return
+    setBulkLoading(true)
+    setError('')
+    try {
+      // Validate all candidates that are not already SUCCESS
+      const eligible = candidates.filter(c => c.status !== 'SUCCESS')
+      if (eligible.length === 0) {
+        throw new Error('All participants in this split are already marked SUCCESS.')
+      }
+
+      for (const item of eligible) {
+        if (!item.email || !/^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/.test(item.email.trim())) {
+          throw new Error(`A valid email address is required for ${item.participantName}.`)
+        }
+        if (!item.phone || !/^\+?[0-9]{10,15}$/.test(item.phone.trim())) {
+          throw new Error(`A valid 10-15 digit mobile number is required for ${item.participantName}.`)
+        }
+      }
+
+      const requestPayload = eligible.map(item => ({
+        allocationId: item.allocationId,
+        email: item.email.trim(),
+        phone: item.phone.trim()
+      }))
+
+      const bulkResponse = await createBulkSplitSabbPePbl(selectedSplit.id, requestPayload)
+
+      if (!bulkResponse || !Array.isArray(bulkResponse.results)) {
+        throw new Error('Invalid response structure from bulk Pay By Link endpoint.')
+      }
+
+      // Update local states for each processed item
+      const updatedState = { ...sabbpePblState }
+      let successCount = 0
+      let failedCount = 0
+
+      for (const resItem of bulkResponse.results) {
+        if (resItem.allocationId) {
+          if (resItem.status === 'LINK_CREATED' || resItem.status === 'EXISTING_PAYMENT') {
+            successCount++
+            const p = resItem.payment || {}
+            updatedState[resItem.allocationId] = {
+              paymentId: resItem.paymentId || p.paymentId,
+              pblOrderRef: resItem.pblOrderRef || p.pblOrderRef,
+              customerEmail: resItem.email,
+              emailDeliveryStatus: resItem.emailDeliveryStatus || p.emailDeliveryStatus,
+              emailDeliveryDetail: resItem.emailDeliveryDetail || p.emailDeliveryDetail,
+              linkStatus: resItem.linkStatus || p.linkStatus,
+              paymentStatus: resItem.paymentStatus || p.paymentStatus,
+              paymentUrl: resItem.paymentUrl || p.paymentUrl || p.checkoutUrl,
+            }
+          } else {
+            failedCount++
+          }
+        }
+      }
+
+      setSabbpePblState(updatedState)
+      setBulkPblPromptModal(null)
+
+      setNotice(`Bulk SabbPe Pay By Link completed: ${successCount} link(s) created/processed${failedCount > 0 ? `, ${failedCount} failed` : ''}.`)
+
+      const refreshed = await apiCall(`/payment-splits/${selectedSplit.id}/allocations`)
+      setAllocations(Array.isArray(refreshed) ? refreshed : [])
+    } catch (err) {
+      setError(err.message || 'Failed to dispatch bulk SabbPe Pay By Link.')
+    } finally {
+      setBulkLoading(false)
+    }
+  }
+
+  // Refresh allocations and backend payment statuses
+  async function handleRefreshAllocationsAndStatuses() {
+    if (!selectedSplit) return
+    setError('')
+    try {
+      const refreshedAllocations = await apiCall(`/payment-splits/${selectedSplit.id}/allocations`)
+      setAllocations(Array.isArray(refreshedAllocations) ? refreshedAllocations : [])
+
+      // If allocations have linked payments, fetch their actual payment records to sync statuses
+      const updatedPblState = { ...sabbpePblState }
+      for (const a of (refreshedAllocations || [])) {
+        if (a.paymentId) {
+          try {
+            const pRecord = await apiCall(`/payments/${a.paymentId}`)
+            if (pRecord) {
+              updatedPblState[a.id] = {
+                ...(updatedPblState[a.id] || {}),
+                paymentId: pRecord.id,
+                pblOrderRef: pRecord.pblOrderRef || updatedPblState[a.id]?.pblOrderRef,
+                paymentStatus: pRecord.status,
+                customerEmail: pRecord.customerEmail || updatedPblState[a.id]?.customerEmail
+              }
+            }
+          } catch (pErr) {
+            // Ignore single payment fetch errors during bulk refresh
+          }
+        }
+      }
+      setSabbpePblState(updatedPblState)
+      setNotice('Allocations and payment records refreshed from backend.')
+    } catch (err) {
+      setError('Unable to refresh allocations: ' + err.message)
     }
   }
 
@@ -753,16 +990,33 @@ export default function SplitPaymentsPage() {
       {/* STEP 5: CREATED SPLIT & QR CODES */}
       {selectedSplit && (
         <div id="split-details" className="card" style={{ marginBottom: 24 }}>
-          <div className="card-header">
+          <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
             <div>
               <h3>Master Split #{selectedSplit.id} — Allocations & Universal QRs</h3>
               <p className="card-subtitle">
                 Total: {money(selectedSplit.totalAmount)} | Status: <strong>{selectedSplit.status}</strong>
               </p>
             </div>
-            <button className="btn-secondary" onClick={() => openSplit(selectedSplit)}>
-              Refresh Allocations
-            </button>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <button
+                type="button"
+                className="btn-primary"
+                style={{ fontSize: 12, padding: '7px 12px', background: '#0284c7', borderColor: '#0284c7' }}
+                onClick={handleOpenBulkSabbPePblModal}
+                disabled={bulkLoading || selectedSplit.status === 'PAID'}
+                title="Generate and dispatch native SabbPe Pay By Link for all eligible participants"
+              >
+                {bulkLoading ? 'Generating Bulk PBL...' : 'Generate SabbPe PBL for All'}
+              </button>
+              <button
+                type="button"
+                className="btn-secondary"
+                style={{ fontSize: 12, padding: '7px 12px' }}
+                onClick={handleRefreshAllocationsAndStatuses}
+              >
+                Refresh Allocations
+              </button>
+            </div>
           </div>
 
           <div style={{ overflowX: 'auto' }}>
@@ -772,55 +1026,245 @@ export default function SplitPaymentsPage() {
                   <th style={{ padding: 10, textAlign: 'left' }}>Participant</th>
                   <th style={{ padding: 10, textAlign: 'left' }}>Allocation Amount</th>
                   <th style={{ padding: 10, textAlign: 'left' }}>Paid Amount</th>
-                  <th style={{ padding: 10, textAlign: 'left' }}>Payment ID</th>
+                  <th style={{ padding: 10, textAlign: 'left' }}>Payment Info</th>
+                  <th style={{ padding: 10, textAlign: 'left' }}>SabbPe PBL Delivery</th>
                   <th style={{ padding: 10, textAlign: 'left' }}>Status</th>
                   <th style={{ padding: 10, textAlign: 'right' }}>Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {allocations.map(alloc => (
-                  <tr key={alloc.id} style={{ borderBottom: '1px solid #e2e8f0' }}>
-                    <td style={{ padding: 10 }}>
-                      <strong>{alloc.participantName}</strong>
-                      <div style={{ fontSize: 11, color: '#64748b' }}>Allocation #{alloc.id}</div>
-                    </td>
-                    <td style={{ padding: 10 }}><strong>{money(alloc.allocationAmount)}</strong></td>
-                    <td style={{ padding: 10 }}>{money(alloc.paidAmount)}</td>
-                    <td style={{ padding: 10 }}>{alloc.paymentId ? `#${alloc.paymentId}` : '—'}</td>
-                    <td style={{ padding: 10 }}>
-                      <span className={`badge ${alloc.status === 'SUCCESS' ? 'status-success' : 'status-pending'}`}>
-                        {alloc.status}
-                      </span>
-                    </td>
-                    <td style={{ padding: 10, textAlign: 'right' }}>
-                      <div style={{ display: 'inline-flex', gap: 6 }}>
-                        <button
-                          type="button"
-                          className="btn-secondary"
-                          style={{ fontSize: 11, padding: '5px 10px', background: '#eff6ff', color: '#2563eb', borderColor: '#bfdbfe' }}
-                          onClick={() => handleGeneratePblLink(alloc)}
-                          disabled={linkLoadingId === alloc.id || alloc.status === 'SUCCESS'}
-                          title={alloc.status === 'FAILED' ? 'Retry Easebuzz Pay by Link' : 'Generate Easebuzz Pay by Link'}
-                        >
-                          {alloc.status === 'FAILED' ? 'Retry PBL' : 'Easebuzz Link'}
-                        </button>
-                        <button
-                          type="button"
-                          className="btn-secondary"
-                          style={{ fontSize: 11, padding: '5px 10px', background: '#f5f3ff', color: '#7c3aed', borderColor: '#ddd6fe' }}
-                          onClick={() => handleGenerateSimulatorQr(alloc)}
-                          disabled={linkLoadingId === alloc.id || alloc.status === 'SUCCESS'}
-                          title="Generate Simulator QR for sandbox testing"
-                        >
-                          {linkLoadingId === alloc.id ? 'Loading...' : 'Simulator QR'}
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                {allocations.map(alloc => {
+                  const pblInfo = sabbpePblState[alloc.id] || {}
+                  const paymentIdDisplay = pblInfo.paymentId || alloc.paymentId || null
+                  const pblOrderRefDisplay = pblInfo.pblOrderRef || null
+                  const recipientEmail = pblInfo.customerEmail || allocationContacts[alloc.id]?.email || null
+                  const linkStatus = pblInfo.linkStatus || null
+                  const emailDeliveryStatus = pblInfo.emailDeliveryStatus || null
+                  const paymentStatus = pblInfo.paymentStatus || alloc.status || 'PENDING'
+
+                  // Regeneration is eligible ONLY when payment or allocation is FAILED, CANCELLED, or TIMEOUT (strictly NOT SUCCESS)
+                  const canRegenerate = alloc.status !== 'SUCCESS' && (
+                    paymentStatus === 'FAILED' ||
+                    paymentStatus === 'CANCELLED' ||
+                    paymentStatus === 'TIMEOUT' ||
+                    alloc.status === 'FAILED'
+                  )
+
+                  return (
+                    <tr key={alloc.id} style={{ borderBottom: '1px solid #e2e8f0' }}>
+                      <td style={{ padding: 10 }}>
+                        <strong>{alloc.participantName}</strong>
+                        <div style={{ fontSize: 11, color: '#64748b' }}>Allocation #{alloc.id}</div>
+                      </td>
+                      <td style={{ padding: 10 }}><strong>{money(alloc.allocationAmount)}</strong></td>
+                      <td style={{ padding: 10 }}>{money(alloc.paidAmount)}</td>
+                      <td style={{ padding: 10 }}>
+                        <div>{paymentIdDisplay ? `ID: #${paymentIdDisplay}` : '—'}</div>
+                        {pblOrderRefDisplay && (
+                          <div style={{ fontSize: 11, color: '#0369a1', fontFamily: 'monospace' }}>
+                            Ref: {pblOrderRefDisplay}
+                          </div>
+                        )}
+                        {recipientEmail && (
+                          <div style={{ fontSize: 11, color: '#64748b' }}>
+                            {recipientEmail}
+                          </div>
+                        )}
+                      </td>
+                      <td style={{ padding: 10 }}>
+                        {pblInfo.pblOrderRef || pblInfo.linkStatus || pblInfo.emailDeliveryStatus ? (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                            <div>
+                              <span>Link: </span>
+                              <span className={`badge ${linkStatus === 'SENT' ? 'status-success' : 'status-pending'}`}>
+                                {linkStatus || 'PENDING'}
+                              </span>
+                            </div>
+                            <div>
+                              <span>Email: </span>
+                              <span
+                                className={`badge ${
+                                  emailDeliveryStatus === 'SENT'
+                                    ? 'status-success'
+                                    : emailDeliveryStatus === 'FAILED'
+                                    ? 'status-danger'
+                                    : 'badge-outline'
+                                }`}
+                              >
+                                {emailDeliveryStatus === 'SENT'
+                                  ? 'SENT'
+                                  : emailDeliveryStatus === 'FAILED'
+                                  ? 'FAILED'
+                                  : 'Status unavailable'}
+                              </span>
+                            </div>
+                          </div>
+                        ) : (
+                          <span style={{ fontSize: 11, color: '#94a3b8' }}>Not Generated</span>
+                        )}
+                      </td>
+                      <td style={{ padding: 10 }}>
+                        <span className={`badge ${alloc.status === 'SUCCESS' ? 'status-success' : alloc.status === 'FAILED' ? 'status-danger' : 'status-pending'}`}>
+                          {alloc.status}
+                        </span>
+                      </td>
+                      <td style={{ padding: 10, textAlign: 'right' }}>
+                        <div style={{ display: 'inline-flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                          <button
+                            type="button"
+                            className="btn-primary"
+                            style={{
+                              fontSize: 11,
+                              padding: '5px 10px',
+                              background: '#0284c7',
+                              borderColor: '#0284c7',
+                              color: '#ffffff'
+                            }}
+                            onClick={() => handleGenerateSabbPePbl(alloc)}
+                            disabled={linkLoadingId === alloc.id || alloc.status === 'SUCCESS'}
+                            title={canRegenerate ? 'Regenerate SabbPe Pay By Link after failure' : 'Generate native SabbPe Pay By Link'}
+                          >
+                            {linkLoadingId === alloc.id
+                              ? 'Loading...'
+                              : canRegenerate
+                              ? 'Regenerate PBL'
+                              : 'SabbPe PBL'}
+                          </button>
+                          <button
+                            type="button"
+                            className="btn-secondary"
+                            style={{ fontSize: 11, padding: '5px 10px', background: '#eff6ff', color: '#2563eb', borderColor: '#bfdbfe' }}
+                            onClick={() => handleGeneratePblLink(alloc)}
+                            disabled={linkLoadingId === alloc.id || alloc.status === 'SUCCESS'}
+                            title={alloc.status === 'FAILED' ? 'Retry Easebuzz Pay by Link' : 'Generate Easebuzz Pay by Link'}
+                          >
+                            {alloc.status === 'FAILED' ? 'Retry Easebuzz' : 'Easebuzz Link'}
+                          </button>
+                          <button
+                            type="button"
+                            className="btn-secondary"
+                            style={{ fontSize: 11, padding: '5px 10px', background: '#f5f3ff', color: '#7c3aed', borderColor: '#ddd6fe' }}
+                            onClick={() => handleGenerateSimulatorQr(alloc)}
+                            disabled={linkLoadingId === alloc.id || alloc.status === 'SUCCESS'}
+                            title="Generate Simulator QR for sandbox testing"
+                          >
+                            {linkLoadingId === alloc.id ? 'Loading...' : 'Simulator QR'}
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>
+        </div>
+      )}
+
+      {/* BULK SABBPE PBL REVIEW PROMPT MODAL */}
+      {bulkPblPromptModal && (
+        <div className="card" style={{ marginBottom: 24, background: '#f0f9ff', border: '2px solid #0284c7' }}>
+          <div className="card-header">
+            <div>
+              <h3>Bulk SabbPe Pay By Link Dispatch — Master Split #{selectedSplit?.id}</h3>
+              <p className="card-subtitle">
+                Review recipient email and mobile numbers for all participants before dispatching native payment links.
+              </p>
+            </div>
+            <button className="btn-secondary" onClick={() => setBulkPblPromptModal(null)} disabled={bulkLoading}>
+              Cancel
+            </button>
+          </div>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault()
+              executeBulkSabbPePbl(bulkPblPromptModal)
+            }}
+            style={{ padding: 16 }}
+          >
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 16 }}>
+              {bulkPblPromptModal.map((cand, idx) => (
+                <div
+                  key={cand.allocationId}
+                  style={{
+                    background: '#ffffff',
+                    border: '1px solid #bae6fd',
+                    borderRadius: 8,
+                    padding: 12,
+                    display: 'grid',
+                    gridTemplateColumns: '1.2fr 1.5fr 1.2fr 100px',
+                    gap: 12,
+                    alignItems: 'center'
+                  }}
+                >
+                  <div>
+                    <strong>{cand.participantName}</strong>
+                    <div style={{ fontSize: 11, color: '#64748b' }}>
+                      Alloc #{cand.allocationId} • {money(cand.allocationAmount)}
+                    </div>
+                  </div>
+                  <div>
+                    <label style={{ display: 'block', fontSize: 11, color: '#475569', marginBottom: 2 }}>
+                      Recipient Email *
+                    </label>
+                    <input
+                      type="email"
+                      required={cand.status !== 'SUCCESS'}
+                      disabled={cand.status === 'SUCCESS' || bulkLoading}
+                      value={cand.email}
+                      onChange={(e) => {
+                        const val = e.target.value
+                        setBulkPblPromptModal(prev => prev.map((item, i) => i === idx ? { ...item, email: val } : item))
+                      }}
+                      placeholder="participant@example.com"
+                      style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid #cbd5e1', fontSize: 12 }}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ display: 'block', fontSize: 11, color: '#475569', marginBottom: 2 }}>
+                      Mobile (10-15 digits) *
+                    </label>
+                    <input
+                      type="tel"
+                      required={cand.status !== 'SUCCESS'}
+                      disabled={cand.status === 'SUCCESS' || bulkLoading}
+                      value={cand.phone}
+                      onChange={(e) => {
+                        const val = e.target.value
+                        setBulkPblPromptModal(prev => prev.map((item, i) => i === idx ? { ...item, phone: val } : item))
+                      }}
+                      placeholder="9876543210"
+                      style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid #cbd5e1', fontSize: 12 }}
+                    />
+                  </div>
+                  <div style={{ textAlign: 'right' }}>
+                    <span className={`badge ${cand.status === 'SUCCESS' ? 'status-success' : 'status-pending'}`}>
+                      {cand.status}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => setBulkPblPromptModal(null)}
+                disabled={bulkLoading}
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="btn-primary"
+                style={{ background: '#0284c7', borderColor: '#0284c7' }}
+                disabled={bulkLoading}
+              >
+                {bulkLoading ? 'Dispatching Bulk Links...' : 'Dispatch All SabbPe Links'}
+              </button>
+            </div>
+          </form>
         </div>
       )}
 
@@ -829,9 +1273,13 @@ export default function SplitPaymentsPage() {
         <div className="card" style={{ marginBottom: 24, background: '#f8fafc', border: '2px solid #2563eb' }}>
           <div className="card-header">
             <div>
-              <h3>Participant Contact Details — {contactPromptModal.participantName}</h3>
+              <h3>
+                {contactPromptModal.type === 'SABBPE_PBL' ? 'SabbPe Native Pay By Link' : 'Easebuzz Pay by Link'} — {contactPromptModal.participantName}
+              </h3>
               <p className="card-subtitle">
-                Enter valid recipient contact info to dispatch the official Easebuzz Pay by Link.
+                {contactPromptModal.type === 'SABBPE_PBL'
+                  ? 'Verify participant contact information before generating the native SabbPe payment link and email delivery.'
+                  : 'Enter valid recipient contact info to dispatch the official Easebuzz Pay by Link.'}
               </p>
             </div>
             <button className="btn-secondary" onClick={() => setContactPromptModal(null)}>Cancel</button>
@@ -839,11 +1287,19 @@ export default function SplitPaymentsPage() {
           <form
             onSubmit={(e) => {
               e.preventDefault()
-              executeGeneratePblLink(
-                contactPromptModal.allocation,
-                contactPromptModal.email,
-                contactPromptModal.phone
-              )
+              if (contactPromptModal.type === 'SABBPE_PBL') {
+                executeGenerateSabbPePbl(
+                  contactPromptModal.allocation,
+                  contactPromptModal.email,
+                  contactPromptModal.phone
+                )
+              } else {
+                executeGeneratePblLink(
+                  contactPromptModal.allocation,
+                  contactPromptModal.email,
+                  contactPromptModal.phone
+                )
+              }
             }}
             style={{ padding: 16 }}
           >
@@ -882,9 +1338,14 @@ export default function SplitPaymentsPage() {
               <button
                 type="submit"
                 className="btn-primary"
+                style={contactPromptModal.type === 'SABBPE_PBL' ? { background: '#0284c7', borderColor: '#0284c7' } : {}}
                 disabled={linkLoadingId === contactPromptModal.allocation.id}
               >
-                {linkLoadingId === contactPromptModal.allocation.id ? 'Generating...' : 'Generate Pay by Link'}
+                {linkLoadingId === contactPromptModal.allocation.id
+                  ? 'Generating...'
+                  : contactPromptModal.type === 'SABBPE_PBL'
+                  ? 'Generate SabbPe Pay by Link'
+                  : 'Generate Pay by Link'}
               </button>
             </div>
           </form>
@@ -893,10 +1354,12 @@ export default function SplitPaymentsPage() {
 
       {/* PBL OUTPUT MODAL */}
       {activePblModal && (
-        <div className="card" style={{ marginBottom: 24, background: '#f8fafc', border: '2px solid #16a34a' }}>
+        <div className="card" style={{ marginBottom: 24, background: '#f8fafc', border: `2px solid ${activePblModal.gatewayProvider === 'SABBPE' ? '#0284c7' : '#16a34a'}` }}>
           <div className="card-header">
             <div>
-              <h3>Pay by Link — {activePblModal.participantName}</h3>
+              <h3>
+                {activePblModal.gatewayProvider === 'SABBPE' ? 'SabbPe Pay by Link' : 'Easebuzz Pay by Link'} — {activePblModal.participantName}
+              </h3>
               <p className="card-subtitle">Payable Allocation Amount: <strong>{money(activePblModal.amount)}</strong></p>
             </div>
             <button className="btn-secondary" onClick={() => setActivePblModal(null)}>Close</button>
@@ -915,30 +1378,65 @@ export default function SplitPaymentsPage() {
                   <strong className="font-mono">{activePblModal.pblOrderRef}</strong>
                 </div>
               )}
+              {activePblModal.recipientEmail && (
+                <div className="qr-meta-row">
+                  <span>Customer Email:</span>
+                  <strong>{activePblModal.recipientEmail}</strong>
+                </div>
+              )}
               <div className="qr-meta-row">
                 <span>Payment Status:</span>
-                <span className={`badge ${activePblModal.paymentStatus === 'SUCCESS' ? 'status-success' : 'status-pending'}`}>
+                <span className={`badge ${activePblModal.paymentStatus === 'SUCCESS' ? 'status-success' : activePblModal.paymentStatus === 'FAILED' ? 'status-danger' : 'status-pending'}`}>
                   {activePblModal.paymentStatus}
                 </span>
               </div>
-              <div className="qr-meta-row">
-                <span>Local Email Delivery:</span>
-                <span
-                  className={`badge ${
-                    activePblModal.localEmailDelivery === 'SMTP_ACCEPTED'
-                      ? 'status-success'
+              {activePblModal.gatewayProvider === 'SABBPE' ? (
+                <>
+                  <div className="qr-meta-row">
+                    <span>Link Status:</span>
+                    <span className={`badge ${activePblModal.linkStatus === 'SENT' ? 'status-success' : 'status-pending'}`}>
+                      {activePblModal.linkStatus || 'PENDING'}
+                    </span>
+                  </div>
+                  <div className="qr-meta-row">
+                    <span>Email Delivery Status:</span>
+                    <span
+                      className={`badge ${
+                        activePblModal.emailDeliveryStatus === 'SENT'
+                          ? 'status-success'
+                          : activePblModal.emailDeliveryStatus === 'FAILED'
+                          ? 'status-danger'
+                          : 'badge-outline'
+                      }`}
+                    >
+                      {activePblModal.emailDeliveryStatus === 'SENT'
+                        ? `SENT (Delivered to ${activePblModal.recipientEmail})`
+                        : activePblModal.emailDeliveryStatus === 'FAILED'
+                        ? `FAILED (${activePblModal.emailDeliveryDetail || 'Gateway dispatch failed'})`
+                        : 'Status unavailable'}
+                    </span>
+                  </div>
+                </>
+              ) : (
+                <div className="qr-meta-row">
+                  <span>Local Email Delivery:</span>
+                  <span
+                    className={`badge ${
+                      activePblModal.localEmailDelivery === 'SMTP_ACCEPTED'
+                        ? 'status-success'
+                        : activePblModal.localEmailDelivery === 'FAILED'
+                        ? 'status-danger'
+                        : 'status-pending'
+                    }`}
+                  >
+                    {activePblModal.localEmailDelivery === 'SMTP_ACCEPTED'
+                      ? `SMTP_ACCEPTED (Accepted for ${activePblModal.recipientEmail || 'recipient'})`
                       : activePblModal.localEmailDelivery === 'FAILED'
-                      ? 'status-danger'
-                      : 'status-pending'
-                  }`}
-                >
-                  {activePblModal.localEmailDelivery === 'SMTP_ACCEPTED'
-                    ? `SMTP_ACCEPTED (Accepted for ${activePblModal.recipientEmail || 'recipient'})`
-                    : activePblModal.localEmailDelivery === 'FAILED'
-                    ? 'FAILED (SMTP error)'
-                    : activePblModal.localEmailDelivery}
-                </span>
-              </div>
+                      ? 'FAILED (SMTP error)'
+                      : activePblModal.localEmailDelivery}
+                  </span>
+                </div>
+              )}
             </div>
 
             {activePblModal.paymentUrl ? (
