@@ -391,3 +391,14 @@ export function processRandomSimulatorOutcome(payload) {
     body: JSON.stringify(payload),
   })
 }
+
+// Reconciles payment status against SabbPe gateway with receiptToken authorization or JWT
+export function reconcileSabbPePayment(paymentId, receiptToken = '') {
+  const tokenQuery = receiptToken ? `?receiptToken=${encodeURIComponent(receiptToken)}` : ''
+  const headers = receiptToken ? { 'X-Receipt-Token': receiptToken } : {}
+  return apiRequest(`/sabbpe/reconciliation/payments/${paymentId}/reconcile${tokenQuery}`, {
+    method: 'POST',
+    headers,
+  })
+}
+

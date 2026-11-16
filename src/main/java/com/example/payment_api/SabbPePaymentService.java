@@ -50,12 +50,15 @@ public class SabbPePaymentService {
     @Value("${sabbpe.initiate-path:/sabbpe/v1/paybylink/generate}")
     private String initiatePath;
 
+    private final PaymentReceiptTokenService receiptTokenService;
+
     public SabbPePaymentService(
             PaymentRepository paymentRepository,
             SabbPeTokenService sabbPeTokenService,
             PaymentSplitService paymentSplitService,
             SabbPeStatusService sabbPeStatusService,
             ObjectProvider<JavaMailSender> mailSenderProvider,
+            PaymentReceiptTokenService receiptTokenService,
             @Value("${otp.mail.from:}") String mailFrom) {
 
         this.paymentRepository = paymentRepository;
@@ -63,6 +66,7 @@ public class SabbPePaymentService {
         this.paymentSplitService = paymentSplitService;
         this.sabbPeStatusService = sabbPeStatusService;
         this.mailSenderProvider = mailSenderProvider;
+        this.receiptTokenService = receiptTokenService;
         this.mailFrom = mailFrom;
     }
 
@@ -353,8 +357,11 @@ public class SabbPePaymentService {
             // Return to this exact saved payment's result page. SabbPe may append
             // pbl_order_ref to this URL; the local payment ID lets the app load
             // the matching database record without trusting query-string status.
+            String token = receiptTokenService != null ? receiptTokenService.generateReceiptToken(payment) : "";
+            String tokenQuery = (token != null && !token.isBlank()) ? ("?token=" + token) : "";
+
             String resultUrl = frontendUrl.replaceAll("/+$", "")
-                    + "/payment-result/" + payment.getId();
+                    + "/payment-result/" + payment.getId() + tokenQuery;
             requestBody.put("redirect_url", resultUrl);
 
             requestBody.put(
@@ -426,7 +433,7 @@ public class SabbPePaymentService {
             // the customer of the acknowledged PBL reference and order details without fabricating a URL.
             String localEmailStatus = "NOT_ATTEMPTED";
             if (!isBlank(request.getEmail()) && (!isBlank(payment.getPaymentUrl()) || !isBlank(result.pblOrderRef()))) {
-                String trackingUrl = frontendUrl.replaceAll("/+$", "") + "/payment-result/" + payment.getId();
+                String trackingUrl = frontendUrl.replaceAll("/+$", "") + "/payment-result/" + payment.getId() + tokenQuery;
                 boolean sent = sendPaymentLinkEmailSafely(
                         request.getEmail().trim(),
                         request.getCustomerName().trim(),
@@ -532,6 +539,10 @@ public class SabbPePaymentService {
                     "message",
                     result.message());
 
+            if (receiptTokenService != null) {
+                apiResponse.put("receiptToken", receiptTokenService.generateReceiptToken(payment));
+            }
+
             if (isSplitPayment) {
                 apiResponse.put("splitId", splitId);
                 apiResponse.put("allocationId", allocationId);
@@ -600,6 +611,9 @@ public class SabbPePaymentService {
         }
         response.put("localEmailDelivery", "NOT_ATTEMPTED (EXISTING_PAYMENT)");
         response.put("message", message);
+        if (receiptTokenService != null) {
+            response.put("receiptToken", receiptTokenService.generateReceiptToken(payment));
+        }
         response.put("splitId", splitId);
         response.put("allocationId", allocationId);
         return response;

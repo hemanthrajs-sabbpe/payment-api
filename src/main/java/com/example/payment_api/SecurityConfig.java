@@ -130,6 +130,12 @@ public class SecurityConfig {
                                 "/api/payments/*"
                         ).permitAll()
 
+                        // Public payment receipt reconciliation (secured by receiptToken in controller)
+                        .requestMatchers(
+                                HttpMethod.POST,
+                                "/api/sabbpe/reconciliation/payments/*/reconcile"
+                        ).permitAll()
+
                         // SabbPe gateway callback
                         .requestMatchers(
                                 "/api/sabbpe/gateway/callback"

@@ -20,12 +20,14 @@ import org.springframework.web.bind.annotation.*;
 public class PaymentController {
 
     private final PaymentService paymentService;
+    private final PaymentReceiptTokenService receiptTokenService;
 
     @Value("${sabbpe.frontend-url:http://192.168.1.13:5173}")
     private String frontendUrl;
 
-    public PaymentController(PaymentService paymentService) {
+    public PaymentController(PaymentService paymentService, PaymentReceiptTokenService receiptTokenService) {
         this.paymentService = paymentService;
+        this.receiptTokenService = receiptTokenService;
     }
 
     private PaymentResponse toResponse(Payment payment) {
@@ -42,6 +44,9 @@ public class PaymentController {
         resp.setPaymentMethod(payment.getPaymentMethod());
         resp.setGatewayProvider(payment.getGatewayProvider());
         resp.setMasterTransactionId(payment.getMasterTransactionId());
+        if (receiptTokenService != null) {
+            resp.setReceiptToken(receiptTokenService.generateReceiptToken(payment));
+        }
         return resp;
     }
 

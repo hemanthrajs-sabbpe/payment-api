@@ -1,7 +1,7 @@
 import React, { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { QRCodeSVG } from 'qrcode.react'
-import { createSabbPePayment } from '../api'
+import { createSabbPePayment, reconcileSabbPePayment } from '../api'
 import { Link2, Copy, ExternalLink, RefreshCw, FileText, CheckCircle2, AlertCircle } from 'lucide-react'
 
 export default function PayByLinkPage() {
@@ -17,6 +17,7 @@ export default function PayByLinkPage() {
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
   const [copied, setCopied] = useState(false)
 
   function findPaymentId(result) {
@@ -128,6 +129,29 @@ export default function PayByLinkPage() {
       setTimeout(() => setCopied(false), 2000)
     } catch {
       setError('Unable to copy automatically. Select and copy manually.')
+    }
+  }
+
+  async function handleRefreshStatus() {
+    if (!paymentId) return
+    setRefreshing(true)
+    setError('')
+    try {
+      const receiptToken = pblResult?.receiptToken || ''
+      const reconciled = await reconcileSabbPePayment(paymentId, receiptToken)
+      if (reconciled) {
+        setPblResult((prev) => ({
+          ...prev,
+          paymentStatus: reconciled.status,
+          transactionId: reconciled.transactionId || prev?.transactionId,
+          masterTransactionId: reconciled.transactionId || prev?.masterTransactionId,
+        }))
+        setMessage(`Payment #${paymentId} status verified: ${reconciled.status}`)
+      }
+    } catch (err) {
+      setError(err?.message || 'Unable to refresh payment status from gateway.')
+    } finally {
+      setRefreshing(false)
     }
   }
 
@@ -328,14 +352,28 @@ export default function PayByLinkPage() {
                   </>
                 )}
                 {paymentId && (
-                  <button
-                    type="button"
-                    className="btn-primary"
-                    onClick={() => navigate(`/receipt/${paymentId}`)}
-                  >
-                    <FileText size={16} />
-                    <span>Track Status & Receipt</span>
-                  </button>
+                  <>
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      onClick={handleRefreshStatus}
+                      disabled={refreshing}
+                    >
+                      <RefreshCw size={16} className={refreshing ? 'spin' : ''} />
+                      <span>{refreshing ? 'Checking Gateway...' : 'Refresh Status'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-primary"
+                      onClick={() => {
+                        const token = pblResult?.receiptToken ? `?token=${encodeURIComponent(pblResult.receiptToken)}` : ''
+                        navigate(`/receipt/${paymentId}${token}`)
+                      }}
+                    >
+                      <FileText size={16} />
+                      <span>Track Status & Receipt</span>
+                    </button>
+                  </>
                 )}
               </div>
             </div>

@@ -18,6 +18,7 @@ export default function ReceiptPage() {
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
   const paymentId = id || searchParams.get('paymentId')
+  const queryToken = searchParams.get('token') || searchParams.get('receiptToken')
 
   const [payment, setPayment] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -42,12 +43,22 @@ export default function ReceiptPage() {
       }
       let data = await response.json()
 
+      const activeToken = queryToken || data?.receiptToken || ''
+
       // If pending with PBL ref, trigger verified backend status check
       if (data?.pblOrderRef && String(data.status).toUpperCase() === 'PENDING') {
         try {
-          await fetch(`${API_BASE_URL}/sabbpe/reconciliation/payments/${paymentId}/reconcile`, {
+          const headers = { ...getAuthHeaders() }
+          if (activeToken) {
+            headers['X-Receipt-Token'] = activeToken
+          }
+          const recUrl = activeToken
+            ? `${API_BASE_URL}/sabbpe/reconciliation/payments/${paymentId}/reconcile?receiptToken=${encodeURIComponent(activeToken)}`
+            : `${API_BASE_URL}/sabbpe/reconciliation/payments/${paymentId}/reconcile`
+
+          await fetch(recUrl, {
             method: 'POST',
-            headers: getAuthHeaders(),
+            headers,
           })
           const refRes = await fetch(`${API_BASE_URL}/payments/${paymentId}`, {
             method: 'GET',
@@ -71,6 +82,7 @@ export default function ReceiptPage() {
 
   const status = String(payment?.status || 'UNKNOWN').toUpperCase()
   const isSuccess = status === 'SUCCESS'
+  const isFailed = ['FAILED', 'FAILURE', 'CANCELLED', 'TIMEOUT'].includes(status)
 
   return (
     <div className="page-wrapper">
@@ -124,13 +136,15 @@ export default function ReceiptPage() {
             <hr className="receipt-divider" />
 
             {/* Status Hero */}
-            <div className={`receipt-status-banner ${isSuccess ? 'banner-success' : 'banner-pending'}`}>
-              {isSuccess ? <CheckCircle2 size={24} /> : <RefreshCw size={24} />}
+            <div className={`receipt-status-banner ${isSuccess ? 'banner-success' : isFailed ? 'banner-failed' : 'banner-pending'}`}>
+              {isSuccess ? <CheckCircle2 size={24} /> : isFailed ? <AlertTriangle size={24} /> : <RefreshCw size={24} />}
               <div>
                 <strong>Payment Status: {status}</strong>
                 <p>
                   {isSuccess
                     ? 'This transaction is confirmed and settled in UAT MariaDB.'
+                    : isFailed
+                    ? 'Transaction has failed, expired, or was cancelled at the gateway.'
                     : 'Transaction is currently awaiting final webhook/gateway settlement.'}
                 </p>
               </div>

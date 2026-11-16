@@ -2,9 +2,13 @@
 package com.example.payment_api;
 
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.Map;
@@ -15,27 +19,53 @@ public class SabbPeReconciliationController {
 
     private final SabbPeReconciliationService reconciliationService;
     private final PaymentRepository paymentRepository;
+    private final PaymentReceiptTokenService receiptTokenService;
 
     public SabbPeReconciliationController(
             SabbPeReconciliationService reconciliationService,
-            PaymentRepository paymentRepository) {
+            PaymentRepository paymentRepository,
+            PaymentReceiptTokenService receiptTokenService) {
         this.reconciliationService = reconciliationService;
         this.paymentRepository = paymentRepository;
+        this.receiptTokenService = receiptTokenService;
     }
 
     /**
      * Verifies one saved SabbPe payment against the provider and persists the
      * verified result. The browser redirect alone is never treated as proof
      * of payment.
+     * Public access is permitted ONLY when authorized by a payment-bound receipt token.
+     * Authenticated merchant users with a valid JWT may also reconcile their payments.
      */
     @PostMapping("/payments/{paymentId}/reconcile")
     public ResponseEntity<?> reconcileOnePayment(
-            @PathVariable Long paymentId) {
+            @PathVariable Long paymentId,
+            @RequestParam(value = "receiptToken", required = false) String receiptTokenParam,
+            @RequestHeader(value = "X-Receipt-Token", required = false) String receiptTokenHeader) {
 
         Payment payment = paymentRepository.findById(paymentId).orElse(null);
 
         if (payment == null) {
             return ResponseEntity.notFound().build();
+        }
+
+        // Authorization check: either valid authenticated session OR valid unguessable receiptToken
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        boolean isAuthenticated = auth != null && auth.isAuthenticated()
+                && auth.getPrincipal() != null && !"anonymousUser".equals(auth.getPrincipal());
+
+        String receiptToken = (receiptTokenHeader != null && !receiptTokenHeader.isBlank())
+                ? receiptTokenHeader
+                : receiptTokenParam;
+
+        boolean tokenValid = receiptToken != null && receiptTokenService.validateReceiptToken(paymentId, receiptToken, payment);
+
+        if (!isAuthenticated && !tokenValid) {
+            return ResponseEntity.status(403)
+                    .body(Map.of(
+                            "message",
+                            "Forbidden: Reconciling this payment requires a valid receipt authorization token or active session."
+                    ));
         }
 
         if (payment.getPblOrderRef() == null
@@ -60,6 +90,9 @@ public class SabbPeReconciliationController {
             result.put("transactionId", updated.getTransactionId());
             result.put("merchantOrderRef", updated.getMerchantOrderRef());
             result.put("pblOrderRef", updated.getPblOrderRef());
+            if (tokenValid || receiptTokenService != null) {
+                result.put("receiptToken", receiptTokenService.generateReceiptToken(updated));
+            }
 
             return ResponseEntity.ok(result);
 

@@ -14,6 +14,7 @@ public class PaymentResponse {
     private String paymentMethod;
     private String gatewayProvider;
     private String masterTransactionId;
+    private String receiptToken;
 
     public PaymentResponse() {
     }
@@ -113,5 +114,13 @@ public class PaymentResponse {
 
     public void setMasterTransactionId(String masterTransactionId) {
         this.masterTransactionId = masterTransactionId;
+    }
+
+    public String getReceiptToken() {
+        return receiptToken;
+    }
+
+    public void setReceiptToken(String receiptToken) {
+        this.receiptToken = receiptToken;
     }
 }

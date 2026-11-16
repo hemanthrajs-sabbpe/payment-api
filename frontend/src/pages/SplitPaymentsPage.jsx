@@ -617,6 +617,23 @@ export default function SplitPaymentsPage() {
     if (!selectedSplit) return
     setError('')
     try {
+      let currentAllocations = allocations
+      if (!currentAllocations || currentAllocations.length === 0) {
+        currentAllocations = await apiCall(`/payment-splits/${selectedSplit.id}/allocations`)
+      }
+
+      // Reconcile any pending allocations with the payment provider first
+      for (const a of (currentAllocations || [])) {
+        if (a.paymentId && String(a.status).toUpperCase() === 'PENDING') {
+          try {
+            await apiCall(`/sabbpe/reconciliation/payments/${a.paymentId}/reconcile`, { method: 'POST' })
+          } catch (rErr) {
+            // Proceed even if an individual reconciliation fails or is not a SabbPe PBL payment
+          }
+        }
+      }
+
+      // Fetch refreshed allocations with updated statuses persisted in DB
       const refreshedAllocations = await apiCall(`/payment-splits/${selectedSplit.id}/allocations`)
       setAllocations(Array.isArray(refreshedAllocations) ? refreshedAllocations : [])
 
@@ -641,7 +658,7 @@ export default function SplitPaymentsPage() {
         }
       }
       setSabbpePblState(updatedPblState)
-      setNotice('Allocations and payment records refreshed from backend.')
+      setNotice('Allocations and payment records synchronized with payment provider.')
     } catch (err) {
       setError('Unable to refresh allocations: ' + err.message)
     }
