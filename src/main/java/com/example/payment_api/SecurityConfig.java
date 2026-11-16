@@ -44,7 +44,7 @@ public class SecurityConfig {
         );
 
         config.setAllowedHeaders(
-                List.of("Authorization", "Content-Type")
+                List.of("Authorization", "Content-Type", "X-Receipt-Token")
         );
 
         config.setAllowCredentials(false);

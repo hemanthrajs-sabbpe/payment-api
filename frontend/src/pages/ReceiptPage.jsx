@@ -22,16 +22,28 @@ export default function ReceiptPage() {
 
   const [payment, setPayment] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
+  const [reconciliationNotice, setReconciliationNotice] = useState('')
+  const [pollCount, setPollCount] = useState(0)
+  const isReconcilingRef = React.useRef(false)
 
-  async function fetchRecord() {
+  async function fetchRecord(isManual = false) {
     if (!paymentId) {
       setError('No payment reference specified.')
       setLoading(false)
       return
     }
 
-    setLoading(true)
+    if (isReconcilingRef.current) {
+      return
+    }
+
+    if (isManual) {
+      setRefreshing(true)
+    } else if (!payment) {
+      setLoading(true)
+    }
     setError('')
     try {
       const response = await fetch(`${API_BASE_URL}/payments/${paymentId}`, {
@@ -47,25 +59,48 @@ export default function ReceiptPage() {
 
       // If pending with PBL ref, trigger verified backend status check
       if (data?.pblOrderRef && String(data.status).toUpperCase() === 'PENDING') {
+        isReconcilingRef.current = true
         try {
-          const headers = { ...getAuthHeaders() }
-          if (activeToken) {
-            headers['X-Receipt-Token'] = activeToken
-          }
           const recUrl = activeToken
             ? `${API_BASE_URL}/sabbpe/reconciliation/payments/${paymentId}/reconcile?receiptToken=${encodeURIComponent(activeToken)}`
             : `${API_BASE_URL}/sabbpe/reconciliation/payments/${paymentId}/reconcile`
 
-          await fetch(recUrl, {
+          const recHeaders = {
+            Accept: 'application/json',
+            'Content-Type': 'application/json',
+          }
+          const jwt = localStorage.getItem('jwtToken')
+          if (jwt) recHeaders.Authorization = `Bearer ${jwt}`
+          if (activeToken) recHeaders['X-Receipt-Token'] = activeToken
+
+          const recRes = await fetch(recUrl, {
             method: 'POST',
-            headers,
+            headers: recHeaders,
           })
+
+          if (recRes.ok) {
+            const recData = await recRes.json()
+            if (recData?.status) {
+              data = { ...data, ...recData }
+            }
+          } else if (recRes.status === 403) {
+            setReconciliationNotice('Public reconciliation token validation failed. Contact merchant or refresh login.')
+          }
+
+          // Refetch fresh payment representation from database
           const refRes = await fetch(`${API_BASE_URL}/payments/${paymentId}`, {
             method: 'GET',
             headers: getAuthHeaders(),
           })
-          if (refRes.ok) data = await refRes.json()
-        } catch {}
+          if (refRes.ok) {
+            data = await refRes.json()
+          }
+        } catch (recErr) {
+          console.warn('[ReceiptPage] Reconciliation network attempt failed:', recErr)
+          setReconciliationNotice('Reconciliation network check pending gateway settlement.')
+        } finally {
+          isReconcilingRef.current = false
+        }
       }
 
       setPayment(data)
@@ -73,12 +108,36 @@ export default function ReceiptPage() {
       setError(err.message || 'Unable to retrieve payment information.')
     } finally {
       setLoading(false)
+      setRefreshing(false)
     }
   }
 
   useEffect(() => {
-    fetchRecord()
+    fetchRecord(false)
   }, [paymentId])
+
+  // Automatic polling when status is PENDING:
+  // - Retries every 3 seconds
+  // - Maximum 5 attempts per receipt visit
+  // - Stops immediately when terminal status (SUCCESS / FAILED / CANCELLED / TIMEOUT) is reached
+  // - Cleans up timer when unmounting or leaving page
+  useEffect(() => {
+    if (!payment) return
+    const currentStatus = String(payment.status || '').toUpperCase()
+    const terminalStatuses = ['SUCCESS', 'FAILED', 'FAILURE', 'CANCELLED', 'TIMEOUT', 'REFUNDED']
+
+    if (terminalStatuses.includes(currentStatus)) {
+      return // Stop polling immediately
+    }
+
+    if (currentStatus === 'PENDING' && payment.pblOrderRef && pollCount < 5) {
+      const timer = setTimeout(() => {
+        setPollCount((prev) => prev + 1)
+        fetchRecord(false)
+      }, 3000)
+      return () => clearTimeout(timer)
+    }
+  }, [payment, pollCount])
 
   const status = String(payment?.status || 'UNKNOWN').toUpperCase()
   const isSuccess = status === 'SUCCESS'
@@ -95,9 +154,9 @@ export default function ReceiptPage() {
           </button>
 
           <div style={{ display: 'flex', gap: 10 }}>
-            <button className="btn-secondary" onClick={fetchRecord} disabled={loading}>
-              <RefreshCw size={16} className={loading ? 'spin' : ''} />
-              <span>Refresh Status</span>
+            <button className="btn-secondary" onClick={() => fetchRecord(true)} disabled={loading || refreshing}>
+              <RefreshCw size={16} className={(loading || refreshing) ? 'spin' : ''} />
+              <span>{refreshing ? 'Verifying...' : 'Refresh Status'}</span>
             </button>
             <button className="btn-primary" onClick={() => window.print()} disabled={!payment}>
               <Printer size={16} />
