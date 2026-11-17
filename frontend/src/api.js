@@ -209,12 +209,17 @@ export function validatePaymentSplit(splitId) {
 }
 
 // ==========================================
-// BUSINESS CATEGORY APIs
+// BUSINESS CATEGORY & ORGANIZATION APIs
 // ==========================================
 
 // Fetch the 12 active business sectors from the backend
 export function getBusinessCategories() {
   return apiRequest('/payment-splits/business-categories')
+}
+
+// Fetch all available organizations
+export function getOrganizations() {
+  return apiRequest('/organizations')
 }
 
 // ==========================================

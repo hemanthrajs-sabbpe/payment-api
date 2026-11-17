@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
 import {
   getBusinessCategories,
+  getOrganizations,
   createSplitAllocationGatewayPayment,
   createSabbPePayment,
   generateSplitPaymentLinks,
@@ -50,10 +51,13 @@ const SPLIT_METHODS = [
 
 export default function SplitPaymentsPage() {
   const [businessCategories, setBusinessCategories] = useState([])
+  const [organizations, setOrganizations] = useState([])
+  const [orgsLoading, setOrgsLoading] = useState(false)
+  const [orgsError, setOrgsError] = useState('')
   const [selectedSector, setSelectedSector] = useState(SECTOR_CONFIG[1]) // Default Restaurant
   const [splitMethod, setSplitMethod] = useState('EQUAL')
   const [splitScope, setSplitScope] = useState('BUSINESS')
-  const [organizationId, setOrganizationId] = useState('ORG-PBL-SIAN')
+  const [organizationId, setOrganizationId] = useState('')
   const [totalAmount, setTotalAmount] = useState('100.00')
 
   // Platform Fee Configuration (Separate feature, NOT a sector)
@@ -102,7 +106,32 @@ export default function SplitPaymentsPage() {
         console.warn('Could not load backend categories:', err.message)
       }
     }
+
+    async function loadOrganizations() {
+      setOrgsLoading(true)
+      setOrgsError('')
+      try {
+        const raw = await getOrganizations()
+        // Handle array or single object response
+        const rows = Array.isArray(raw) ? raw : (raw && typeof raw === 'object' && raw.organizationId ? [raw] : [])
+        const activeOrgs = rows.filter(o => !o.status || o.status.toUpperCase() === 'ACTIVE')
+        setOrganizations(activeOrgs)
+        setOrganizationId((prev) => {
+          if (prev && activeOrgs.some(o => o.organizationId === prev)) return prev
+          return activeOrgs[0]?.organizationId || ''
+        })
+      } catch (err) {
+        console.warn('Could not load backend organizations:', err.message)
+        setOrgsError(err.message || 'Unable to load authorized organizations.')
+        setOrganizations([])
+        setOrganizationId('')
+      } finally {
+        setOrgsLoading(false)
+      }
+    }
+
     loadCategories()
+    loadOrganizations()
     fetchHistory()
   }, [])
 
@@ -826,14 +855,29 @@ export default function SplitPaymentsPage() {
 
           {splitScope === 'BUSINESS' && (
             <div className="form-group">
-              <label>Organization ID</label>
-              <input
-                type="text"
-                value={organizationId}
-                onChange={(e) => setOrganizationId(e.target.value)}
-                disabled={loading}
-                style={{ width: '100%', padding: '9px 12px', borderRadius: 8, border: '1px solid #cbd5e1' }}
-              />
+              <label>Organization *</label>
+              {orgsLoading ? (
+                <div style={{ padding: '9px 12px', fontSize: 13, color: '#64748b', background: '#f1f5f9', borderRadius: 8 }}>
+                  Loading authorized organizations...
+                </div>
+              ) : organizations.length > 0 ? (
+                <select
+                  value={organizationId}
+                  onChange={(e) => setOrganizationId(e.target.value)}
+                  disabled={loading}
+                  style={{ width: '100%', padding: '9px 12px', borderRadius: 8, border: '1px solid #cbd5e1' }}
+                >
+                  {organizations.map((org) => (
+                    <option key={org.organizationId} value={org.organizationId}>
+                      {org.legalName ? `${org.legalName} (${org.organizationId})` : org.organizationId}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <div style={{ padding: '10px 12px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, color: '#b91c1c', fontSize: 13 }}>
+                  <strong>No authorized organizations found.</strong> {orgsError || 'Your merchant account has no active organization memberships. You cannot create a Business Split.'}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -999,7 +1043,11 @@ export default function SplitPaymentsPage() {
           </div>
         </div>
 
-        <button type="submit" className="btn-primary btn-block" disabled={loading}>
+        <button
+          type="submit"
+          className="btn-primary btn-block"
+          disabled={loading || (splitScope === 'BUSINESS' && (orgsLoading || !organizationId || organizations.length === 0))}
+        >
           {loading ? 'Creating Split on SabbPe UAT...' : `Create Master Split & Allocations (${money(finalPayableTotal)})`}
         </button>
       </form>

@@ -99,6 +99,24 @@ public class GlobalExceptionHandler {
         );
     }
 
+    // AUTHORIZATION / SECURITY EXCEPTIONS
+    @ExceptionHandler({
+            SecurityException.class,
+            org.springframework.security.access.AccessDeniedException.class
+    })
+    @ResponseStatus(HttpStatus.FORBIDDEN)
+    public Map<String, String> handleSecurityException(
+            Exception exception) {
+
+        log.warn("Access denied or security authorization failure: exceptionType={}, message={}",
+                exception.getClass().getSimpleName(), exception.getMessage());
+
+        return Map.of(
+                "message",
+                exception.getMessage() != null ? exception.getMessage() : "Access denied"
+        );
+    }
+
     // PESSIMISTIC LOCKING / DATABASE CONCURRENCY CONFLICTS & COMMIT-TIME DEADLOCKS
     @ExceptionHandler({
             org.springframework.dao.PessimisticLockingFailureException.class,
